@@ -1354,42 +1354,6 @@ void RGWPutObj_ObjStore_S3::send_response()
   end_header(s, this);
 }
 
-/*
- * parses params in the format: 'first; param1=foo; param2=bar'
- */
-static void parse_params(const string& params_str, string& first,
-			 map<string, string>& params)
-{
-  int pos = params_str.find(';');
-  if (pos < 0) {
-    first = rgw_trim_whitespace(params_str);
-    return;
-  }
-
-  first = rgw_trim_whitespace(params_str.substr(0, pos));
-
-  pos++;
-
-  while (pos < (int)params_str.size()) {
-    ssize_t end = params_str.find(';', pos);
-    if (end < 0)
-      end = params_str.size();
-
-    string param = params_str.substr(pos, end - pos);
-
-    int eqpos = param.find('=');
-    if (eqpos > 0) {
-      string param_name = rgw_trim_whitespace(param.substr(0, eqpos));
-      string val = rgw_trim_quotes(param.substr(eqpos + 1));
-      params[param_name] = val;
-    } else {
-      params[rgw_trim_whitespace(param)] = "";
-    }
-
-    pos = end + 1;
-  }
-}
-
 void RGWPostObj_ObjStore_S3::rebuild_key(string& key)
 {
   static string var = "${filename}";
@@ -1411,51 +1375,14 @@ std::string RGWPostObj_ObjStore_S3::get_current_filename() const
 
 int RGWPostObj_ObjStore_S3::get_params()
 {
-  // get the part boundary
-  string req_content_type_str = s->info.env->get("CONTENT_TYPE", "");
-  string req_content_type;
-  map<string, string> params;
-
-  if (s->expect_cont) {
-    /* ok, here it really gets ugly. With POST, the params are embedded in the
-     * request body, so we need to continue before being able to actually look
-     * at them. This diverts from the usual request flow.
-     */
-    dump_continue(s);
-    s->expect_cont = false;
-  }
-
-  parse_params(req_content_type_str, req_content_type, params);
-
-  if (req_content_type.compare("multipart/form-data") != 0) {
-    err_msg = "Request Content-Type is not multipart/form-data";
-    return -EINVAL;
-  }
-
-  if (s->cct->_conf->subsys.should_gather(ceph_subsys_rgw, 20)) {
-    ldout(s->cct, 20) << "request content_type_str="
-		      << req_content_type_str << dendl;
-    ldout(s->cct, 20) << "request content_type params:" << dendl;
-    map<string, string>::iterator iter;
-    for (iter = params.begin(); iter != params.end(); ++iter) {
-      ldout(s->cct, 20) << " " << iter->first << " -> " << iter->second
-			<< dendl;
-    }
+  op_ret = RGWPostObj_ObjStore::get_params();
+  if (op_ret < 0) {
+    return op_ret;
   }
 
   ldout(s->cct, 20) << "adding bucket to policy env: " << s->bucket.name
 		    << dendl;
   env.add_var("bucket", s->bucket.name);
-
-  map<string, string>::iterator iter = params.find("boundary");
-  if (iter == params.end()) {
-    err_msg = "Missing multipart boundary specification";
-    return -EINVAL;
-  }
-
-  // create the boundary
-  boundary = "--";
-  boundary.append(iter->second);
 
   bool done;
   do {
@@ -1473,9 +1400,9 @@ int RGWPostObj_ObjStore_S3::get_params()
 	ldout(s->cct, 20) << "val=" << piter->second.val << dendl;
 	ldout(s->cct, 20) << "params:" << dendl;
 	map<string, string>& params = piter->second.params;
-	for (iter = params.begin(); iter != params.end(); ++iter) {
-	  ldout(s->cct, 20) << " " << iter->first << " -> " << iter->second
-			    << dendl;
+        for (const auto& pair : params) {
+	  ldout(s->cct, 20) << " " << pair.first << " -> " << pair.second
+                            << dendl;
 	}
       }
     }
