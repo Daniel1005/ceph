@@ -1238,30 +1238,32 @@ int RGWPutObj_ObjStore::get_data(bufferlist& bl)
 /*
  * parses params in the format: 'first; param1=foo; param2=bar'
  */
-static void parse_params(const string& params_str, string& first,
-			 map<string, string>& params)
+void RGWPostObj_ObjStore::parse_boundary_params(
+  const std::string& params_str,
+  std::string& first,
+  std::map<std::string, std::string>& params)
 {
-  int pos = params_str.find(';');
-  if (pos < 0) {
+  std::size_t pos = params_str.find(';');
+  if (std::string::npos == pos) {
     first = rgw_trim_whitespace(params_str);
     return;
   }
 
   first = rgw_trim_whitespace(params_str.substr(0, pos));
-
   pos++;
 
-  while (pos < (int)params_str.size()) {
-    ssize_t end = params_str.find(';', pos);
-    if (end < 0)
+  while (pos < params_str.size()) {
+    std::size_t end = params_str.find(';', pos);
+    if (std::string::npos == end) {
       end = params_str.size();
+    }
 
-    string param = params_str.substr(pos, end - pos);
+    std::string param = params_str.substr(pos, end - pos);
+    std::size_t eqpos = param.find('=');
 
-    int eqpos = param.find('=');
-    if (eqpos > 0) {
-      string param_name = rgw_trim_whitespace(param.substr(0, eqpos));
-      string val = rgw_trim_quotes(param.substr(eqpos + 1));
+    if (std::string::npos != eqpos) {
+      std::string param_name = rgw_trim_whitespace(param.substr(0, eqpos));
+      std::string val = rgw_trim_quotes(param.substr(eqpos + 1));
       params[param_name] = val;
     } else {
       params[rgw_trim_whitespace(param)] = "";
@@ -1283,7 +1285,7 @@ int RGWPostObj_ObjStore::parse_part_field(const std::string& line,
   if (pos >= (int)line.size() - 1)
     return 0;
 
-  parse_params(line.substr(pos + 1), field.val, field.params);
+  parse_boundary_params(line.substr(pos + 1), field.val, field.params);
 
   return 0;
 }
@@ -1541,7 +1543,7 @@ int RGWPostObj_ObjStore::get_params()
   std::string req_content_type_str = s->info.env->get("CONTENT_TYPE", "");
   std::string req_content_type;
   std::map<std::string, std::string> params;
-  parse_params(req_content_type_str, req_content_type, params);
+  parse_boundary_params(req_content_type_str, req_content_type, params);
 
   if (req_content_type.compare("multipart/form-data") != 0) {
     err_msg = "Request Content-Type is not multipart/form-data";
