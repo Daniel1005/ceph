@@ -1488,7 +1488,8 @@ int RGWPostObj_ObjStore::read_form_part_header(struct post_form_part* const part
   return 0;
 }
 
-bool RGWPostObj_ObjStore::part_str(const std::string& name,
+bool RGWPostObj_ObjStore::part_str(/*const*/ parts_coll_t& parts,
+                                   const std::string& name,
                                    std::string* val)
 {
   const auto iter = parts.find(name);
@@ -1502,7 +1503,8 @@ bool RGWPostObj_ObjStore::part_str(const std::string& name,
   return true;
 }
 
-bool RGWPostObj_ObjStore::part_bl(const std::string& name,
+bool RGWPostObj_ObjStore::part_bl(/*const*/ parts_coll_t& parts,
+                                  const std::string& name,
                                   ceph::bufferlist* pbl)
 {
   const auto iter = parts.find(name);
