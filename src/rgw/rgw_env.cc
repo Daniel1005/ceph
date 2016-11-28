@@ -7,6 +7,7 @@
 #include <string>
 #include <map>
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
 void RGWEnv::init(CephContext *cct)

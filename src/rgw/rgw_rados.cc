@@ -73,6 +73,7 @@ using namespace librados;
 
 #include "compressor/Compressor.h"
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
 
 using namespace std;
@@ -2845,7 +2846,7 @@ void *RGWRadosThread::Worker::entry() {
   utime_t interval = utime_t(msec / 1000, (msec % 1000) * 1000000);
 
   do {
-    utime_t start = ceph_clock_now(cct);
+    utime_t start = ceph_clock_now();
     int r = processor->process();
     if (r < 0) {
       dout(0) << "ERROR: processor->process() returned error r=" << r << dendl;
@@ -2854,7 +2855,7 @@ void *RGWRadosThread::Worker::entry() {
     if (processor->going_down())
       break;
 
-    utime_t end = ceph_clock_now(cct);
+    utime_t end = ceph_clock_now();
     end -= start;
 
     uint64_t cur_msec = processor->interval_msec();
@@ -2871,7 +2872,7 @@ void *RGWRadosThread::Worker::entry() {
       wait_time -= end;
 
       lock.Lock();
-      cond.WaitInterval(cct, lock, wait_time);
+      cond.WaitInterval(lock, wait_time);
       lock.Unlock();
     } else {
       lock.Lock();
@@ -5357,7 +5358,7 @@ int RGWRados::create_bucket(RGWUserInfo& owner, rgw_bucket& bucket,
     info.bucket_index_shard_hash_type = RGWBucketInfo::MOD;
     info.requester_pays = false;
     if (real_clock::is_zero(creation_time)) {
-      info.creation_time = ceph::real_clock::now(cct);
+      info.creation_time = ceph::real_clock::now();
     } else {
       info.creation_time = creation_time;
     }
@@ -11777,7 +11778,7 @@ int RGWRados::process_lc()
 
 int RGWRados::process_expire_objects()
 {
-  obj_expirer->inspect_all_shards(utime_t(), ceph_clock_now(cct));
+  obj_expirer->inspect_all_shards(utime_t(), ceph_clock_now());
   return 0;
 }
 
@@ -12613,7 +12614,7 @@ int RGWStateLog::store_entry(const string& client_id, const string& op_id, const
   if (check_state) {
     cls_statelog_check_state(op, client_id, op_id, object, *check_state);
   }
-  utime_t ts = ceph_clock_now(store->ctx());
+  utime_t ts = ceph_clock_now();
   bufferlist nobl;
   cls_statelog_add(op, client_id, op_id, object, ts, state, (bl ? *bl : nobl));
   r = ioctx.operate(oid, &op);

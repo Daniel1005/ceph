@@ -41,6 +41,7 @@
 #define O_DSYNC O_SYNC
 #endif
 
+#define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_journal
 #undef dout_prefix
 #define dout_prefix *_dout << "journal "
@@ -908,7 +909,7 @@ void FileJournal::queue_write_fin(uint64_t seq, Context *fin)
 void FileJournal::queue_completions_thru(uint64_t seq)
 {
   assert(finisher_lock.is_locked());
-  utime_t now = ceph_clock_now(g_ceph_context);
+  utime_t now = ceph_clock_now();
   list<completion_item> items;
   batch_pop_completions(items);
   list<completion_item>::iterator it = items.begin();
@@ -1039,7 +1040,7 @@ void FileJournal::do_write(bufferlist& bl)
 	   << (hbp.length() ? " + header":"")
 	   << dendl;
 
-  utime_t from = ceph_clock_now(g_ceph_context);
+  utime_t from = ceph_clock_now();
 
   // entry
   off64_t pos = write_pos;
@@ -1142,7 +1143,7 @@ void FileJournal::do_write(bufferlist& bl)
 #endif
   }
 
-  utime_t lat = ceph_clock_now(g_ceph_context) - from;
+  utime_t lat = ceph_clock_now() - from;
   dout(20) << "do_write latency " << lat << dendl;
 
   write_lock.Lock();
@@ -1621,7 +1622,7 @@ void FileJournal::submit_entry(uint64_t seq, bufferlist& e, uint32_t orig_len,
 
     completions.push_back(
       completion_item(
-	seq, oncommit, ceph_clock_now(g_ceph_context), osd_op));
+	seq, oncommit, ceph_clock_now(), osd_op));
     if (writeq.empty())
       writeq_cond.Signal();
     writeq.push_back(write_item(seq, e, orig_len, osd_op));
