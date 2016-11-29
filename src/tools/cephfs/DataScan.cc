@@ -42,6 +42,7 @@ void DataScan::usage()
     << "    --force-pool: use data pool even if it is not in FSMap\n"
     << "\n"
     << "  cephfs-data-scan scan_frags [--force-corrupt]\n"
+    << "  cephfs-data-scan cleanup <data pool name>\n"
     << std::endl;
 
   generic_client_usage();
@@ -165,7 +166,8 @@ int DataScan::main(const std::vector<const char*> &args)
 
     // Trailing positional argument
     if (i + 1 == args.end() &&
-        (command == "scan_inodes" || command == "scan_extents")) {
+        (command == "scan_inodes" || command == "scan_extents"
+         || command == "cleanup")) {
       data_pool_name = *i;
       continue;
     }
@@ -235,7 +237,8 @@ int DataScan::main(const std::vector<const char*> &args)
 
   // Initialize data_io for those commands that need it
   if (command == "scan_inodes" ||
-      command == "scan_extents") {
+     || command == "scan_extents"
+     || command == "cleanup") {
     if (data_pool_name.empty()) {
       std::cerr << "Data pool not specified" << std::endl;
       usage();
@@ -842,6 +845,55 @@ int DataScan::scan_inodes()
 
     return r;
   });
+}
+
+int DataScan::cleanup()
+{
+  bool roots_present;
+  int r = driver->check_roots(&roots_present);
+  if (r != 0) {
+    derr << "Unexpected error checking roots: '"
+      << cpp_strerror(r) << "'" << dendl;
+    return r;
+  }
+
+  if (!roots_present) {
+    std::cerr << "Some or all system inodes are absent.  Run 'init' from "
+      "one node before running 'cleanup'" << std::endl;
+    return -EIO;
+  }
+
+  return forall_objects(data_io, true, [this](
+        std::string const &oid,
+        uint64_t obj_name_ino,
+        uint64_t obj_name_offset) -> int
+      {
+      int r = 0;
+
+      AccumulateResult accum_res;
+      inode_backtrace_t backtrace;
+      file_layout_t loaded_layout = file_layout_t::get_default();
+      r = ClsCephFSClient::fetch_inode_accumulate_result(
+        data_io, oid, &backtrace, &loaded_layout, &accum_res);
+
+      if (r < 0) {
+      dout(4) << "No accumulated metadata found for '"
+      << oid << "': " << cpp_strerror(r) << dendl;
+      return r;
+      }
+
+      dout(4) << "Start cleanup accumulated metadata" << dendl;
+
+      r = ClsCephFSClient::delete_inode_accumulate_result(data_io, oid);
+
+      if (r < 0) {
+        dout(4) << "Error deleting accumulated metadata from '"
+          << oid << "': " << cpp_strerror(r) << dendl;
+        return r;
+      }
+
+      return r;
+      });
 }
 
 bool DataScan::valid_ino(inodeno_t ino) const
