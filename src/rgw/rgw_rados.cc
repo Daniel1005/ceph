@@ -11291,11 +11291,35 @@ int RGWRados::omap_get_vals(rgw_obj& obj, bufferlist& header, const string& mark
  
 }
 
-int RGWRados::omap_get_all(rgw_obj& obj, bufferlist& header, std::map<string, bufferlist>& m)
+int RGWRados::omap_get_all(rgw_obj& obj, bufferlist& header,
+			   std::map<string, bufferlist>& m)
 {
-  string start_after;
+  rgw_rados_ref ref;
+  rgw_bucket bucket;
+  int r = get_obj_ref(obj, &ref, &bucket);
+  if (r < 0) {
+    return r;
+  }
 
-  return omap_get_vals(obj, header, start_after, (uint64_t)-1, m);
+#define MAX_OMAP_GET_ENTRIES 1024
+  const int count = MAX_OMAP_GET_ENTRIES;
+  string start_after;
+  bool done = false;
+
+  while (!done) {
+    std::map<string, bufferlist> t;
+    r = ref.ioctx.omap_get_vals(ref.oid, start_after, count, &t);
+    if (r < 0) {
+      return r;
+    }
+    if (t.empty()) {
+      break;
+    }
+    done = (t.size() < count);
+    start_after = t.rbegin()->first;
+    m.insert(t.begin(), t.end());
+  }
+  return 0;
 }
 
 int RGWRados::omap_set(rgw_obj& obj, std::string& key, bufferlist& bl)
