@@ -152,7 +152,8 @@ protected:
     return mdcache->mds;
   }
 public:
-  explicit MDCacheIOContext(MDCache *mdc_) : mdcache(mdc_) {}
+  explicit MDCacheIOContext(MDCache *mdc_, bool track=true) :
+    MDSIOContextBase(track), mdcache(mdc_) {}
 };
 
 class MDCacheLogContext : public virtual MDSLogContextBase {
@@ -188,9 +189,9 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   num_shadow_inodes = 0;
   num_inodes_with_caps = 0;
 
-  max_dir_commit_size = g_conf->mds_dir_max_commit_size ?
-                        (g_conf->mds_dir_max_commit_size << 20) :
-                        (0.9 *(g_conf->osd_max_write_size << 20));
+  max_dir_commit_size = g_conf()->mds_dir_max_commit_size ?
+                        (g_conf()->mds_dir_max_commit_size << 20) :
+                        (0.9 *(g_conf()->osd_max_write_size << 20));
 
   discover_last_tid = 0;
   open_ino_last_tid = 0;
@@ -207,11 +208,17 @@ MDCache::MDCache(MDSRank *m, PurgeQueue &purge_queue_) :
   cap_imports_num_opening = 0;
 
   opening_root = open = false;
-  lru.lru_set_midpoint(cache_mid());
+
+  cache_inode_limit = g_conf().get_val<int64_t>("mds_cache_size");
+  cache_memory_limit = g_conf().get_val<uint64_t>("mds_cache_memory_limit");
+  cache_reservation = g_conf().get_val<double>("mds_cache_reservation");
+  cache_health_threshold = g_conf().get_val<double>("mds_health_cache_threshold");
+
+  lru.lru_set_midpoint(g_conf().get_val<double>("mds_cache_mid"));
 
   bottom_lru.lru_set_midpoint(0);
 
-  decayrate.set_halflife(g_conf->mds_decay_halflife);
+  decayrate.set_halflife(g_conf()->mds_decay_halflife);
 
   did_shutdown_log_cap = false;
 
@@ -225,11 +232,28 @@ MDCache::~MDCache()
   }
 }
 
+void MDCache::handle_conf_change(const ConfigProxy& conf,
+                                 const std::set <std::string> &changed,
+                                 const MDSMap &mdsmap)
+{
+  if (changed.count("mds_cache_size"))
+    cache_inode_limit = g_conf().get_val<int64_t>("mds_cache_size");
+  if (changed.count("mds_cache_memory_limit"))
+    cache_memory_limit = g_conf().get_val<uint64_t>("mds_cache_memory_limit");
+  if (changed.count("mds_cache_reservation"))
+    cache_reservation = g_conf().get_val<double>("mds_cache_reservation");
+  if (changed.count("mds_health_cache_threshold"))
+    cache_health_threshold = g_conf().get_val<double>("mds_health_cache_threshold");
+  if (changed.count("mds_cache_mid"))
+    lru.lru_set_midpoint(g_conf().get_val<double>("mds_cache_mid"));
 
+  migrator->handle_conf_change(conf, changed, mdsmap);
+  mds->balancer->handle_conf_change(conf, changed, mdsmap);
+}
 
 void MDCache::log_stat()
 {
-  mds->logger->set(l_mds_inode_max, cache_limit_inodes() == 0 ? INT_MAX : cache_limit_inodes());
+  mds->logger->set(l_mds_inode_max, cache_inode_limit ? : INT_MAX);
   mds->logger->set(l_mds_inodes, lru.lru_get_size());
   mds->logger->set(l_mds_inodes_pinned, lru.lru_get_num_pinned());
   mds->logger->set(l_mds_inodes_top, lru.lru_get_top());
@@ -348,9 +372,9 @@ file_layout_t MDCache::gen_default_log_layout(const MDSMap &mdsmap)
 {
   file_layout_t result = file_layout_t::get_default();
   result.pool_id = mdsmap.get_metadata_pool();
-  if (g_conf->mds_log_segment_size > 0) {
-    result.object_size = g_conf->mds_log_segment_size;
-    result.stripe_unit = g_conf->mds_log_segment_size;
+  if (g_conf()->mds_log_segment_size > 0) {
+    result.object_size = g_conf()->mds_log_segment_size;
+    result.stripe_unit = g_conf()->mds_log_segment_size;
   }
   return result;
 }
@@ -379,7 +403,7 @@ void MDCache::create_unlinked_system_inode(CInode *in, inodeno_t ino,
 
   memset(&in->inode.dir_layout, 0, sizeof(in->inode.dir_layout));
   if (in->inode.is_dir()) {
-    in->inode.dir_layout.dl_dir_hash = g_conf->mds_default_dir_hash;
+    in->inode.dir_layout.dl_dir_hash = g_conf()->mds_default_dir_hash;
     ++in->inode.rstat.rsubdirs;
   } else {
     in->inode.layout = default_file_layout;
@@ -410,8 +434,8 @@ CInode *MDCache::create_system_inode(inodeno_t ino, int mode)
 CInode *MDCache::create_root_inode()
 {
   CInode *i = create_system_inode(MDS_INO_ROOT, S_IFDIR|0755);
-  i->inode.uid = g_conf->mds_root_ino_uid;
-  i->inode.gid = g_conf->mds_root_ino_gid;
+  i->inode.uid = g_conf()->mds_root_ino_uid;
+  i->inode.gid = g_conf()->mds_root_ino_gid;
   i->inode.layout = default_file_layout;
   i->inode.layout.pool_id = mds->mdsmap->get_first_data_pool();
   return i;
@@ -886,10 +910,9 @@ void MDCache::adjust_subtree_auth(CDir *dir, mds_authority_t auth, bool adjust_p
 
     // adjust recursive pop counters
     if (adjust_pop && dir->is_auth()) {
-      utime_t now = ceph_clock_now();
       CDir *p = dir->get_parent_dir();
       while (p) {
-	p->pop_auth_subtree.sub(now, decayrate, dir->pop_auth_subtree);
+	p->pop_auth_subtree.sub(dir->pop_auth_subtree);
 	if (p->is_subtree_root()) break;
 	p = p->inode->get_parent_dir();
       }
@@ -963,11 +986,10 @@ void MDCache::try_subtree_merge_at(CDir *dir, set<CInode*> *to_eval, bool adjust
 
     // adjust popularity?
     if (adjust_pop && dir->is_auth()) {
-      utime_t now = ceph_clock_now();
       CDir *cur = dir;
       CDir *p = dir->get_parent_dir();
       while (p) {
-	p->pop_auth_subtree.add(now, decayrate, dir->pop_auth_subtree);
+	p->pop_auth_subtree.add(dir->pop_auth_subtree);
 	p->pop_lru_subdirs.push_front(&cur->get_inode()->item_pop_lru);
 	if (p->is_subtree_root()) break;
 	cur = p;
@@ -1348,9 +1370,6 @@ void MDCache::adjust_subtree_after_rename(CInode *diri, CDir *olddir, bool pop)
 {
   dout(10) << "adjust_subtree_after_rename " << *diri << " from " << *olddir << dendl;
 
-  //show_subtrees();
-  utime_t now = ceph_clock_now();
-
   CDir *newdir = diri->get_parent_dir();
 
   if (pop) {
@@ -1379,7 +1398,7 @@ void MDCache::adjust_subtree_after_rename(CInode *diri, CDir *olddir, bool pop)
     dout(10) << " new parent " << *newparent << dendl;
 
     if (olddir != newdir)
-      mds->balancer->adjust_pop_for_rename(olddir, dir, now, false);
+      mds->balancer->adjust_pop_for_rename(olddir, dir, false);
 
     if (oldparent == newparent) {
       dout(10) << "parent unchanged for " << *dir << " at " << *oldparent << dendl;
@@ -1423,7 +1442,7 @@ void MDCache::adjust_subtree_after_rename(CInode *diri, CDir *olddir, bool pop)
     }
 
     if (olddir != newdir)
-      mds->balancer->adjust_pop_for_rename(newdir, dir, now, true);
+      mds->balancer->adjust_pop_for_rename(newdir, dir, true);
   }
 
   show_subtrees();
@@ -1559,7 +1578,7 @@ CInode *MDCache::cow_inode(CInode *in, snapid_t last)
     // clone caps?
     for (auto &p : in->client_caps) {
       client_t client = p.first;
-      Capability *cap = p.second;
+      Capability *cap = &p.second;
       int issued = cap->need_snapflush() ? CEPH_CAP_ANY_WR : cap->issued();
       if ((issued & CEPH_CAP_ANY_WR) &&
 	  cap->client_follows < last) {
@@ -1802,7 +1821,7 @@ void MDCache::project_rstat_inode_to_frag(CInode *cur, CDir *parent, snapid_t fi
 				 linkunlink, update);
   }
 
-  if (g_conf->mds_snap_rstat) {
+  if (g_conf()->mds_snap_rstat) {
     for (const auto &p : cur->dirty_old_rstats) {
       auto &old = cur->old_inodes[p];
       snapid_t ofirst = std::max(old.first, floor);
@@ -1849,7 +1868,7 @@ void MDCache::_project_rstat_inode_to_frag(CInode::mempool_inode& inode, snapid_
     snapid_t first;
     fnode_t *pf = parent->get_projected_fnode();
     if (last == CEPH_NOSNAP) {
-      if (g_conf->mds_snap_rstat)
+      if (g_conf()->mds_snap_rstat)
 	first = std::max(ofirst, parent->first);
       else
 	first = parent->first;
@@ -1867,7 +1886,7 @@ void MDCache::_project_rstat_inode_to_frag(CInode::mempool_inode& inode, snapid_
 	parent->dirty_old_rstat[first-1].accounted_rstat = pf->accounted_rstat;
       }
       parent->first = first;
-    } else if (!g_conf->mds_snap_rstat) {
+    } else if (!g_conf()->mds_snap_rstat) {
       // drop snapshots' rstats
       break;
     } else if (last >= parent->first) {
@@ -2017,17 +2036,15 @@ void MDCache::broadcast_quota_to_client(CInode *in, client_t exclude_ct)
   if (!in->get_projected_srnode())
     mds->server->create_quota_realm(in);
 
-  for (map<client_t,Capability*>::iterator it = in->client_caps.begin();
-       it != in->client_caps.end();
-       ++it) {
-    Session *session = mds->get_session(it->first);
+  for (auto &p : in->client_caps) {
+    Session *session = mds->get_session(p.first);
     if (!session || !session->connection ||
         !session->connection->has_feature(CEPH_FEATURE_MDS_QUOTA))
       continue;
 
-    Capability *cap = it->second;
+    Capability *cap = &p.second;
 
-    if (exclude_ct >= 0 && exclude_ct != it->first)
+    if (exclude_ct >= 0 && exclude_ct != p.first)
       goto update;
 
     if (cap->last_rbytes == i->rstat.rbytes &&
@@ -2237,11 +2254,11 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 
     // delay propagating until later?
     if (!stop && !first &&
-	g_conf->mds_dirstat_min_interval > 0) {
+	g_conf()->mds_dirstat_min_interval > 0) {
       double since_last_prop = mut->get_mds_stamp() - pin->last_dirstat_prop;
-      if (since_last_prop < g_conf->mds_dirstat_min_interval) {
+      if (since_last_prop < g_conf()->mds_dirstat_min_interval) {
 	dout(10) << "predirty_journal_parents last prop " << since_last_prop
-		 << " < " << g_conf->mds_dirstat_min_interval
+		 << " < " << g_conf()->mds_dirstat_min_interval
 		 << ", stopping" << dendl;
 	stop = true;
       } else {
@@ -2306,7 +2323,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 
       if (parent->get_frag() == frag_t()) { // i.e., we are the only frag
 	if (pi.inode.dirstat.size() < 0)
-	  assert(!"negative dirstat size" == g_conf->mds_verify_scatter);
+	  assert(!"negative dirstat size" == g_conf()->mds_verify_scatter);
 	if (pi.inode.dirstat.size() != pf->fragstat.size()) {
 	  mds->clog->error() << "unmatched fragstat size on single dirfrag "
 	     << parent->dirfrag() << ", inode has " << pi.inode.dirstat
@@ -2315,7 +2332,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 	  // trust the dirfrag for now
 	  pi.inode.dirstat = pf->fragstat;
 
-	  assert(!"unmatched fragstat size" == g_conf->mds_verify_scatter);
+	  assert(!"unmatched fragstat size" == g_conf()->mds_verify_scatter);
 	}
       }
     }
@@ -2342,7 +2359,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
     // first, if the frag is stale, bring it back in sync.
     parent->resync_accounted_rstat();
 
-    if (g_conf->mds_snap_rstat) {
+    if (g_conf()->mds_snap_rstat) {
       for (auto &p : parent->dirty_old_rstat) {
 	project_rstat_frag_to_inode(p.second.rstat, p.second.accounted_rstat, p.second.first,
 				    p.first, pin, true);
@@ -2362,7 +2379,7 @@ void MDCache::predirty_journal_parents(MutationRef mut, EMetaBlob *blob,
 	// trust the dirfrag for now
 	pi.inode.rstat = pf->rstat;
 
-	assert(!"unmatched rstat rbytes" == g_conf->mds_verify_scatter);
+	assert(!"unmatched rstat rbytes" == g_conf()->mds_verify_scatter);
       }
     }
 
@@ -4052,12 +4069,13 @@ void MDCache::rejoin_send_rejoins()
       for (auto q = p->second.second.begin(); q != p->second.second.end(); ++q)
 	client_exports[q->first].insert(target);
     }
-    for (map<client_t, set<mds_rank_t> >::iterator p = client_exports.begin();
-	 p != client_exports.end();
-	 ++p) {
-      entity_inst_t inst = mds->sessionmap.get_inst(entity_name_t::CLIENT(p->first.v));
-      for (set<mds_rank_t>::iterator q = p->second.begin(); q != p->second.end(); ++q)
-	rejoins[*q]->client_map[p->first] = inst;
+    for (auto& p : client_exports) {
+      Session *session = mds->sessionmap.get_session(entity_name_t::CLIENT(p.first.v));
+      for (auto& q : p.second) {
+	auto rejoin =  rejoins[q];
+	rejoin->client_map[p.first] = session->info.inst;
+	rejoin->client_metadata_map[p.first] = session->info.client_metadata;
+      }
     }
   }
   
@@ -4428,6 +4446,8 @@ void MDCache::handle_cache_rejoin_weak(MMDSCacheRejoin *weak)
 
     // check cap exports.
     rejoin_client_map.insert(weak->client_map.begin(), weak->client_map.end());
+    rejoin_client_metadata_map.insert(weak->client_metadata_map.begin(),
+				      weak->client_metadata_map.end());
 
     for (auto p = weak->cap_exports.begin(); p != weak->cap_exports.end(); ++p) {
       CInode *in = get_inode(p->first);
@@ -4690,7 +4710,7 @@ CDir *MDCache::rejoin_invent_dirfrag(dirfrag_t df)
   if (!in->is_dir()) {
     assert(in->state_test(CInode::STATE_REJOINUNDEF));
     in->inode.mode = S_IFDIR;
-    in->inode.dir_layout.dl_dir_hash = g_conf->mds_default_dir_hash;
+    in->inode.dir_layout.dl_dir_hash = g_conf()->mds_default_dir_hash;
   }
   CDir *dir = in->get_or_open_dirfrag(this, df.frag);
   dir->state_set(CDir::STATE_REJOINUNDEF);
@@ -5008,7 +5028,7 @@ void MDCache::handle_cache_rejoin_ack(MMDSCacheRejoin *ack)
 	diri = new CInode(this, false);
 	diri->inode.ino = p->first.ino;
 	diri->inode.mode = S_IFDIR;
-	diri->inode.dir_layout.dl_dir_hash = g_conf->mds_default_dir_hash;
+	diri->inode.dir_layout.dl_dir_hash = g_conf()->mds_default_dir_hash;
 	add_inode(diri);
 	if (MDS_INO_MDSDIR(from) == p->first.ino) {
 	  diri->inode_auth = mds_authority_t(from, CDIR_AUTH_UNKNOWN);
@@ -5080,7 +5100,7 @@ void MDCache::handle_cache_rejoin_ack(MMDSCacheRejoin *ack)
 	    in = new CInode(this, false, q->second.first, q->first.snapid);
 	    in->inode.ino = q->second.ino;
 	    in->inode.mode = S_IFDIR;
-	    in->inode.dir_layout.dl_dir_hash = g_conf->mds_default_dir_hash;
+	    in->inode.dir_layout.dl_dir_hash = g_conf()->mds_default_dir_hash;
 	    add_inode(in);
 	    dout(10) << " add inode " << *in << dendl;
 	  } else if (in->get_parent_dn()) {
@@ -5453,10 +5473,14 @@ bool MDCache::process_imported_caps()
 	rejoin_session_map.empty()) {
       C_MDC_RejoinSessionsOpened *finish = new C_MDC_RejoinSessionsOpened(this);
       version_t pv = mds->server->prepare_force_open_sessions(rejoin_client_map,
+							      rejoin_client_metadata_map,
 							      finish->session_map);
-      mds->mdlog->start_submit_entry(new ESessions(pv, rejoin_client_map), finish);
+      ESessions *le = new ESessions(pv, std::move(rejoin_client_map),
+				    std::move(rejoin_client_metadata_map));
+      mds->mdlog->start_submit_entry(le, finish);
       mds->mdlog->flush();
       rejoin_client_map.clear();
+      rejoin_client_metadata_map.clear();
       return true;
     }
 
@@ -6036,7 +6060,7 @@ void MDCache::opened_undef_inode(CInode *in) {
   rejoin_undef_inodes.erase(in);
   if (in->is_dir()) {
     // FIXME: re-hash dentries if necessary
-    assert(in->inode.dir_layout.dl_dir_hash == g_conf->mds_default_dir_hash);
+    assert(in->inode.dir_layout.dl_dir_hash == g_conf()->mds_default_dir_hash);
     if (in->has_dirfrags() && !in->dirfragtree.is_leaf(frag_t())) {
       CDir *dir = in->get_dirfrag(frag_t());
       assert(dir);
@@ -6442,10 +6466,14 @@ struct C_IO_MDC_TruncateFinish : public MDCacheIOContext {
   CInode *in;
   LogSegment *ls;
   C_IO_MDC_TruncateFinish(MDCache *c, CInode *i, LogSegment *l) :
-    MDCacheIOContext(c), in(i), ls(l) {}
+    MDCacheIOContext(c, false), in(i), ls(l) {
+  }
   void finish(int r) override {
     assert(r == 0 || r == -ENOENT);
     mdcache->truncate_inode_finish(in, ls);
+  }
+  void print(ostream& out) const override {
+    out << "file_truncate(" << in->ino() << ")";
   }
 };
 
@@ -6659,12 +6687,12 @@ void MDCache::trim_lru(uint64_t count, map<mds_rank_t, MCacheExpire*> &expiremap
 bool MDCache::trim(uint64_t count)
 {
   uint64_t used = cache_size();
-  uint64_t limit = cache_limit_memory();
+  uint64_t limit = cache_memory_limit;
   map<mds_rank_t, MCacheExpire*> expiremap;
 
   dout(7) << "trim bytes_used=" << bytes2str(used)
           << " limit=" << bytes2str(limit)
-          << " reservation=" << cache_reservation()
+          << " reservation=" << cache_reservation
           << "% count=" << count << dendl;
 
   // process delayed eval_stray()
@@ -7662,13 +7690,13 @@ void MDCache::shutdown_check()
   // cache
   char old_val[32] = { 0 };
   char *o = old_val;
-  g_conf->get_val("debug_mds", &o, sizeof(old_val));
-  g_conf->set_val("debug_mds", "10");
-  g_conf->apply_changes(NULL);
+  g_conf().get_val("debug_mds", &o, sizeof(old_val));
+  g_conf().set_val("debug_mds", "10");
+  g_conf().apply_changes(nullptr);
   show_cache();
-  g_conf->set_val("debug_mds", old_val);
-  g_conf->apply_changes(NULL);
-  mds->timer.add_event_after(g_conf->mds_shutdown_check, new C_MDC_ShutdownCheck(this));
+  g_conf().set_val("debug_mds", old_val);
+  g_conf().apply_changes(nullptr);
+  mds->timer.add_event_after(g_conf()->mds_shutdown_check, new C_MDC_ShutdownCheck(this));
 
   // this
   dout(0) << "lru size now " << lru.lru_get_size() << "/" << bottom_lru.lru_get_size() << dendl;
@@ -7686,10 +7714,10 @@ void MDCache::shutdown_start()
 {
   dout(2) << "shutdown_start" << dendl;
 
-  if (g_conf->mds_shutdown_check)
-    mds->timer.add_event_after(g_conf->mds_shutdown_check, new C_MDC_ShutdownCheck(this));
+  if (g_conf()->mds_shutdown_check)
+    mds->timer.add_event_after(g_conf()->mds_shutdown_check, new C_MDC_ShutdownCheck(this));
 
-  //  g_conf->debug_mds = 10;
+  //  g_conf()->debug_mds = 10;
 }
 
 
@@ -8515,6 +8543,9 @@ class C_IO_MDC_OpenInoBacktraceFetched : public MDCacheIOContext {
     MDCacheIOContext(c), ino(i) {}
   void finish(int r) override {
     mdcache->_open_ino_backtrace_fetched(ino, bl, r);
+  }
+  void print(ostream& out) const override {
+    out << "openino_backtrace_fetch" << ino << ")";
   }
 };
 
@@ -10997,9 +11028,6 @@ void MDCache::adjust_dir_fragments(CInode *diri,
       }
 
       show_subtrees(10);
-
-      // dir has no PIN_SUBTREE; CDir::purge_stolen() drops it.
-      dir->dir_auth = CDIR_AUTH_DEFAULT;
     }
     
     diri->close_dirfrag(dir->get_frag());
@@ -11358,7 +11386,7 @@ void MDCache::find_stale_fragment_freeze()
   // see comment in Migrator::find_stale_export_freeze()
   utime_t now = ceph_clock_now();
   utime_t cutoff = now;
-  cutoff -= g_conf->mds_freeze_tree_timeout;
+  cutoff -= g_conf()->mds_freeze_tree_timeout;
 
   for (map<dirfrag_t,fragment_info_t>::iterator p = fragments.begin();
        p != fragments.end(); ) {
@@ -11443,6 +11471,9 @@ public:
     assert(r == 0 || r == -ENOENT);
     mdcache->_fragment_finish(basedirfrag, resultfrags);
   }
+  void print(ostream& out) const override {
+    out << "dirfrags_commit(" << basedirfrag << ")";
+  }
 };
 
 void MDCache::fragment_frozen(MDRequestRef& mdr, int r)
@@ -11518,7 +11549,7 @@ void MDCache::dispatch_fragment_dir(MDRequestRef& mdr)
   list<MDSInternalContextBase*> waiters;
   adjust_dir_fragments(diri, info.dirs, basedirfrag.frag, info.bits,
 		       info.resultfrags, waiters, false);
-  if (g_conf->mds_debug_frag)
+  if (g_conf()->mds_debug_frag)
     diri->verify_dirfrags();
   mds->queue_waiters(waiters);
 
@@ -11762,7 +11793,7 @@ void MDCache::handle_fragment_notify(MMDSFragmentNotify *notify)
     list<MDSInternalContextBase*> waiters;
     list<CDir*> resultfrags;
     adjust_dir_fragments(diri, base, bits, resultfrags, waiters, false);
-    if (g_conf->mds_debug_frag)
+    if (g_conf()->mds_debug_frag)
       diri->verify_dirfrags();
     
     for (list<CDir*>::iterator p = resultfrags.begin(); p != resultfrags.end(); ++p)
@@ -11913,7 +11944,7 @@ void MDCache::rollback_uncommitted_fragments()
       ls->dirty_dirfrag_dirfragtree.push_back(&diri->item_dirty_dirfrag_dirfragtree);
     }
 
-    if (g_conf->mds_debug_frag)
+    if (g_conf()->mds_debug_frag)
       diri->verify_dirfrags();
 
     for (list<frag_t>::iterator q = old_frags.begin(); q != old_frags.end(); ++q)
@@ -11960,12 +11991,12 @@ void MDCache::force_readonly()
 
 void MDCache::show_subtrees(int dbl)
 {
-  if (g_conf->mds_thrash_exports)
+  if (g_conf()->mds_thrash_exports)
     dbl += 15;
 
   //dout(10) << "show_subtrees" << dendl;
 
-  if (!g_conf->subsys.should_gather(ceph_subsys_mds, dbl))
+  if (!g_conf()->subsys.should_gather(ceph_subsys_mds, dbl))
     return;  // i won't print anything.
 
   if (subtrees.empty()) {
@@ -12319,6 +12350,13 @@ void MDCache::enqueue_scrub(
 
   mdr->internal_op_finish = cs;
   enqueue_scrub_work(mdr);
+
+  // since recursive scrub is asynchronous, dump minimal output
+  // to not upset cli tools.
+  if (recursive) {
+    f->open_object_section("results");
+    f->close_section(); // results
+  }
 }
 
 void MDCache::enqueue_scrub_work(MDRequestRef& mdr)
@@ -12608,7 +12646,9 @@ do_rdlocks:
 
   frag_info_t dir_info;
   nest_info_t nest_info;
-  nest_info.rsubdirs++; // it gets one to account for self
+  nest_info.rsubdirs = 1; // it gets one to account for self
+  if (const sr_t *srnode = diri->get_projected_srnode(); srnode)
+    nest_info.rsnaps = srnode->snaps.size();
 
   diri->dirfragtree.get_leaves(frags);
   for (list<frag_t>::iterator p = frags.begin(); p != frags.end(); ++p) {
@@ -12829,3 +12869,13 @@ void MDCache::clear_dirty_bits_for_stray(CInode* diri) {
   }
 }
 
+bool MDCache::dump_inode(Formatter *f, uint64_t number) {
+  CInode *in = get_inode(number);
+  if (!in) {
+    return false;
+  }
+  f->open_object_section("inode");
+  in->dump(f, CInode::DUMP_DEFAULT | CInode::DUMP_PATH);
+  f->close_section();
+  return true;
+}

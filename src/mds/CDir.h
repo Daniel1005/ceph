@@ -24,7 +24,6 @@
 #include <string>
 #include <string_view>
 
-#include "common/DecayCounter.h"
 #include "common/bloom_filter.hpp"
 #include "common/config.h"
 #include "include/buffer_fwd.h"
@@ -41,6 +40,9 @@ struct ObjectOperation;
 
 ostream& operator<<(ostream& out, const class CDir& dir);
 class CDir : public MDSCacheObject, public Counter<CDir> {
+  using time = ceph::coarse_mono_time;
+  using clock = ceph::coarse_mono_clock;
+
   friend ostream& operator<<(ostream& out, const class CDir& dir);
 
 public:
@@ -180,6 +182,15 @@ public:
   void resync_accounted_rstat();
   void assimilate_dirty_rstat_inodes();
   void assimilate_dirty_rstat_inodes_finish(MutationRef& mut, EMetaBlob *blob);
+
+  void mark_exporting() {
+    state_set(CDir::STATE_EXPORTING);
+    inode->num_exporting_dirs++;
+  }
+  void clear_exporting() {
+    state_clear(CDir::STATE_EXPORTING);
+    inode->num_exporting_dirs--;
+  }
 
 protected:
   version_t projected_version;
@@ -375,7 +386,7 @@ protected:
   dirfrag_load_vec_t pop_auth_subtree;
   dirfrag_load_vec_t pop_auth_subtree_nested;
  
-  mono_time last_popularity_sample;
+  time last_popularity_sample = clock::zero();
 
   load_spread_t pop_spread;
 
@@ -494,11 +505,11 @@ public:
   void merge(std::list<CDir*>& subs, std::list<MDSInternalContextBase*>& waiters, bool replay);
 
   bool should_split() const {
-    return (int)get_frag_size() > g_conf->mds_bal_split_size;
+    return (int)get_frag_size() > g_conf()->mds_bal_split_size;
   }
   bool should_split_fast() const;
   bool should_merge() const {
-    return (int)get_frag_size() < g_conf->mds_bal_merge_size;
+    return (int)get_frag_size() < g_conf()->mds_bal_merge_size;
   }
 
 private:
@@ -700,12 +711,12 @@ public:
 
   // -- import/export --
   void encode_export(bufferlist& bl);
-  void finish_export(utime_t now);
+  void finish_export();
   void abort_export() {
     put(PIN_TEMPEXPORTING);
   }
-  void decode_import(bufferlist::const_iterator& blp, utime_t now, LogSegment *ls);
-  void abort_import(utime_t now);
+  void decode_import(bufferlist::const_iterator& blp, LogSegment *ls);
+  void abort_import();
 
   // -- auth pins --
   bool can_auth_pin() const override { return is_auth() && !(is_frozen() || is_freezing()); }
@@ -768,7 +779,7 @@ public:
   ostream& print_db_line_prefix(ostream& out) override;
   void print(ostream& out) override;
   void dump(Formatter *f, int flags = DUMP_DEFAULT) const;
-  void dump_load(Formatter *f, utime_t now, const DecayRate& rate);
+  void dump_load(Formatter *f);
 };
 
 #endif

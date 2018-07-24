@@ -1,10 +1,10 @@
+import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { NO_ERRORS_SCHEMA } from '@angular/core';
-import { async, ComponentFixture, TestBed } from '@angular/core/testing';
-
-import { Observable } from 'rxjs/Observable';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { DashboardService } from '../../../shared/api/dashboard.service';
 import { SharedModule } from '../../../shared/shared.module';
+import { configureTestBed } from '../../../shared/unit-test-helper';
 import { LogColorPipe } from '../log-color.pipe';
 import { MdsSummaryPipe } from '../mds-summary.pipe';
 import { MgrSummaryPipe } from '../mgr-summary.pipe';
@@ -18,44 +18,25 @@ describe('HealthComponent', () => {
   let component: HealthComponent;
   let fixture: ComponentFixture<HealthComponent>;
 
-  const fakeService = {
-    getHealth: () => {
-      return Observable.of({
-        health: {},
-        df: {
-          stats: {}
-        },
-        pools: []
-      });
-    }
-  };
-
-  beforeEach(async(() => {
-    TestBed.configureTestingModule({
-      providers: [{ provide: DashboardService, useValue: fakeService }],
-      imports: [SharedModule],
-      declarations: [
-        HealthComponent,
-        MonSummaryPipe,
-        OsdSummaryPipe,
-        MdsSummaryPipe,
-        MgrSummaryPipe,
-        PgStatusStylePipe,
-        LogColorPipe,
-        PgStatusPipe
-      ],
-      schemas: [NO_ERRORS_SCHEMA]
-    }).compileComponents();
-  }));
+  configureTestBed({
+    providers: [DashboardService],
+    imports: [SharedModule, HttpClientTestingModule],
+    declarations: [
+      HealthComponent,
+      MonSummaryPipe,
+      OsdSummaryPipe,
+      MdsSummaryPipe,
+      MgrSummaryPipe,
+      PgStatusStylePipe,
+      LogColorPipe,
+      PgStatusPipe
+    ],
+    schemas: [NO_ERRORS_SCHEMA]
+  });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(HealthComponent);
     component = fixture.componentInstance;
-
-    component.contentData = {
-      health: {}
-    };
-
     fixture.detectChanges();
   });
 

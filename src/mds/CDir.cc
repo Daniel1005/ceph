@@ -136,7 +136,7 @@ ostream& operator<<(ostream& out, const CDir& dir)
   out << " " << dir.fnode.fragstat;
   if (!(dir.fnode.fragstat == dir.fnode.accounted_fragstat))
     out << "/" << dir.fnode.accounted_fragstat;
-  if (g_conf->mds_debug_scatterstat && dir.is_projected()) {
+  if (g_conf()->mds_debug_scatterstat && dir.is_projected()) {
     const fnode_t *pf = dir.get_projected_fnode();
     out << "->" << pf->fragstat;
     if (!(pf->fragstat == pf->accounted_fragstat))
@@ -147,7 +147,7 @@ ostream& operator<<(ostream& out, const CDir& dir)
   out << " " << dir.fnode.rstat;
   if (!(dir.fnode.rstat == dir.fnode.accounted_rstat))
     out << "/" << dir.fnode.accounted_rstat;
-  if (g_conf->mds_debug_scatterstat && dir.is_projected()) {
+  if (g_conf()->mds_debug_scatterstat && dir.is_projected()) {
     const fnode_t *pf = dir.get_projected_fnode();
     out << "->" << pf->rstat;
     if (!(pf->rstat == pf->accounted_rstat))
@@ -199,10 +199,11 @@ CDir::CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth) :
   num_dirty(0), committing_version(0), committed_version(0),
   dir_auth_pins(0), request_pins(0),
   dir_rep(REP_NONE),
-  pop_me(ceph_clock_now()),
-  pop_nested(ceph_clock_now()),
-  pop_auth_subtree(ceph_clock_now()),
-  pop_auth_subtree_nested(ceph_clock_now()),
+  pop_me(mdcache->decayrate),
+  pop_nested(mdcache->decayrate),
+  pop_auth_subtree(mdcache->decayrate),
+  pop_auth_subtree_nested(mdcache->decayrate),
+  pop_spread(mdcache->decayrate),
   pop_lru_subdirs(member_offset(CInode, item_pop_lru)),
   num_dentries_nested(0), num_dentries_auth_subtree(0),
   num_dentries_auth_subtree_nested(0),
@@ -220,7 +221,7 @@ CDir::CDir(CInode *in, frag_t fg, MDCache *mdcache, bool auth) :
  */
 bool CDir::check_rstats(bool scrub)
 {
-  if (!g_conf->mds_debug_scatterstat && !scrub)
+  if (!g_conf()->mds_debug_scatterstat && !scrub)
     return true;
 
   dout(25) << "check_rstats on " << this << dendl;
@@ -862,7 +863,7 @@ void CDir::steal_dentry(CDentry *dn)
       fnode.rstat.rbytes += pi->accounted_rstat.rbytes;
       fnode.rstat.rfiles += pi->accounted_rstat.rfiles;
       fnode.rstat.rsubdirs += pi->accounted_rstat.rsubdirs;
-      fnode.rstat.rsnaprealms += pi->accounted_rstat.rsnaprealms;
+      fnode.rstat.rsnaps += pi->accounted_rstat.rsnaps;
       if (pi->accounted_rstat.rctime > fnode.rstat.rctime)
 	fnode.rstat.rctime = pi->accounted_rstat.rctime;
 
@@ -1017,10 +1018,7 @@ void CDir::split(int bits, list<CDir*>& subs, list<MDSInternalContextBase*>& wai
     CDir *f = new CDir(inode, *p, cache, is_auth());
     f->state_set(state & (MASK_STATE_FRAGMENT_KEPT | STATE_COMPLETE));
     f->get_replicas() = get_replicas();
-    f->dir_auth = dir_auth;
-    f->init_fragment_pins();
     f->set_version(get_version());
-
     f->pop_me = pop_me;
     f->pop_me.scale(fac);
 
@@ -1038,6 +1036,7 @@ void CDir::split(int bits, list<CDir*>& subs, list<MDSInternalContextBase*>& wai
 
     f->set_dir_auth(get_dir_auth());
     f->prepare_new_fragment(replay);
+    f->init_fragment_pins();
   }
   
   // repartition dentries
@@ -1603,6 +1602,9 @@ public:
 	fin->complete(r);
     }
   }
+  void print(ostream& out) const override {
+    out << "dirfrag_fetch_more(" << dir->dirfrag() << ")";
+  }
 };
 
 class C_IO_Dir_OMAP_Fetched : public CDirIOContext {
@@ -1630,6 +1632,9 @@ public:
 	fin->complete(r);
     }
   }
+  void print(ostream& out) const override {
+    out << "dirfrag_fetch(" << dir->dirfrag() << ")";
+  }
 };
 
 void CDir::_omap_fetch(MDSInternalContextBase *c, const std::set<dentry_key_t>& keys)
@@ -1641,7 +1646,7 @@ void CDir::_omap_fetch(MDSInternalContextBase *c, const std::set<dentry_key_t>& 
   rd.omap_get_header(&fin->hdrbl, &fin->ret1);
   if (keys.empty()) {
     assert(!c);
-    rd.omap_get_vals("", "", g_conf->mds_dir_keys_per_op,
+    rd.omap_get_vals("", "", g_conf()->mds_dir_keys_per_op,
 		     &fin->omap, &fin->more, &fin->ret2);
   } else {
     assert(c);
@@ -1654,7 +1659,7 @@ void CDir::_omap_fetch(MDSInternalContextBase *c, const std::set<dentry_key_t>& 
     rd.omap_get_vals_by_keys(str_keys, &fin->omap, &fin->ret2);
   }
   // check the correctness of backtrace
-  if (g_conf->mds_verify_backtrace > 0 && frag == frag_t()) {
+  if (g_conf()->mds_verify_backtrace > 0 && frag == frag_t()) {
     rd.getxattr("parent", &fin->btbl, &fin->ret3);
     rd.set_last_op_flags(CEPH_OSD_OP_FLAG_FAILOK);
   } else {
@@ -1679,7 +1684,7 @@ void CDir::_omap_fetch_more(
   ObjectOperation rd;
   rd.omap_get_vals(fin->omap.rbegin()->first,
 		   "", /* filter prefix */
-		   g_conf->mds_dir_keys_per_op,
+		   g_conf()->mds_dir_keys_per_op,
 		   &fin->omap_more,
 		   &fin->more,
 		   &fin->ret);
@@ -1859,7 +1864,7 @@ CDentry *CDir::_load_dentry(
         //in->hack_accessed = false;
         //in->hack_load_stamp = ceph_clock_now();
         //num_new_inodes_loaded++;
-      } else if (g_conf->get_val<bool>("mds_hack_allow_loading_invalid_metadata")) {
+      } else if (g_conf().get_val<bool>("mds_hack_allow_loading_invalid_metadata")) {
 	dout(20) << "hack: adding duplicate dentry for " << *in << dendl;
 	dn = add_primary_dentry(dname, in, first, last);
       } else {
@@ -2128,6 +2133,9 @@ public:
   C_IO_Dir_Committed(CDir *d, version_t v) : CDirIOContext(d), version(v) { }
   void finish(int r) override {
     dir->_committed(r, version);
+  }
+  void print(ostream& out) const override {
+    out << "dirfrag_commit(" << dir->dirfrag() << ")";
   }
 };
 
@@ -2501,18 +2509,18 @@ void CDir::encode_export(bufferlist& bl)
   get(PIN_TEMPEXPORTING);
 }
 
-void CDir::finish_export(utime_t now)
+void CDir::finish_export()
 {
   state &= MASK_STATE_EXPORT_KEPT;
-  pop_nested.sub(now, cache->decayrate, pop_auth_subtree);
-  pop_auth_subtree_nested.sub(now, cache->decayrate, pop_auth_subtree);
-  pop_me.zero(now);
-  pop_auth_subtree.zero(now);
+  pop_nested.sub(pop_auth_subtree);
+  pop_auth_subtree_nested.sub(pop_auth_subtree);
+  pop_me.zero();
+  pop_auth_subtree.zero();
   put(PIN_TEMPEXPORTING);
   dirty_old_rstat.clear();
 }
 
-void CDir::decode_import(bufferlist::const_iterator& blp, utime_t now, LogSegment *ls)
+void CDir::decode_import(bufferlist::const_iterator& blp, LogSegment *ls)
 {
   decode(first, blp);
   decode(fnode, blp);
@@ -2533,10 +2541,10 @@ void CDir::decode_import(bufferlist::const_iterator& blp, utime_t now, LogSegmen
 
   decode(dir_rep, blp);
 
-  decode(pop_me, now, blp);
-  decode(pop_auth_subtree, now, blp);
-  pop_nested.add(now, cache->decayrate, pop_auth_subtree);
-  pop_auth_subtree_nested.add(now, cache->decayrate, pop_auth_subtree);
+  decode(pop_me, blp);
+  decode(pop_auth_subtree, blp);
+  pop_nested.add(pop_auth_subtree);
+  pop_auth_subtree_nested.add(pop_auth_subtree);
 
   decode(dir_rep_by, blp);
   decode(get_replicas(), blp);
@@ -2566,7 +2574,7 @@ void CDir::decode_import(bufferlist::const_iterator& blp, utime_t now, LogSegmen
   }
 }
 
-void CDir::abort_import(utime_t now)
+void CDir::abort_import()
 {
   assert(is_auth());
   state_clear(CDir::STATE_AUTH);
@@ -2576,10 +2584,10 @@ void CDir::abort_import(utime_t now)
   if (is_dirty())
     mark_clean();
 
-  pop_nested.sub(now, cache->decayrate, pop_auth_subtree);
-  pop_auth_subtree_nested.sub(now, cache->decayrate, pop_auth_subtree);
-  pop_me.zero(now);
-  pop_auth_subtree.zero(now);
+  pop_nested.sub(pop_auth_subtree);
+  pop_auth_subtree_nested.sub(pop_auth_subtree);
+  pop_me.zero();
+  pop_auth_subtree.zero();
 }
 
 
@@ -2657,7 +2665,9 @@ void CDir::set_dir_auth(const mds_authority_t &a)
   // new subtree root?
   if (!was_subtree && is_subtree_root()) {
     dout(10) << " new subtree root, adjusting auth_pins" << dendl;
-    
+
+    inode->num_subtree_roots++;   
+
     // adjust nested auth pins
     if (get_cum_auth_pins())
       inode->adjust_nested_auth_pins(-1, NULL);
@@ -2671,7 +2681,9 @@ void CDir::set_dir_auth(const mds_authority_t &a)
   } 
   if (was_subtree && !is_subtree_root()) {
     dout(10) << " old subtree root, adjusting auth_pins" << dendl;
-    
+
+    inode->num_subtree_roots--;
+  
     // adjust nested auth pins
     if (get_cum_auth_pins())
       inode->adjust_nested_auth_pins(1, NULL);
@@ -3133,25 +3145,25 @@ void CDir::dump(Formatter *f, int flags) const
   }
 }
 
-void CDir::dump_load(Formatter *f, utime_t now, const DecayRate& rate)
+void CDir::dump_load(Formatter *f)
 {
   f->dump_stream("path") << get_path();
   f->dump_stream("dirfrag") << dirfrag();
 
   f->open_object_section("pop_me");
-  pop_me.dump(f, now, rate);
+  pop_me.dump(f);
   f->close_section();
 
   f->open_object_section("pop_nested");
-  pop_nested.dump(f, now, rate);
+  pop_nested.dump(f);
   f->close_section();
 
   f->open_object_section("pop_auth_subtree");
-  pop_auth_subtree.dump(f, now, rate);
+  pop_auth_subtree.dump(f);
   f->close_section();
 
   f->open_object_section("pop_auth_subtree_nested");
-  pop_auth_subtree_nested.dump(f, now, rate);
+  pop_auth_subtree_nested.dump(f);
   f->close_section();
 }
 
@@ -3396,7 +3408,7 @@ std::string CDir::get_path() const
 bool CDir::should_split_fast() const
 {
   // Max size a fragment can be before trigger fast splitting
-  int fast_limit = g_conf->mds_bal_split_size * g_conf->mds_bal_fragment_fast_factor;
+  int fast_limit = g_conf()->mds_bal_split_size * g_conf()->mds_bal_fragment_fast_factor;
 
   // Fast path: the sum of accounted size and null dentries does not
   // exceed threshold: we definitely are not over it.

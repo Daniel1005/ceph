@@ -32,14 +32,13 @@ rm -rf build && ./do_cmake.sh "$*" \
 	-D WITH_LIBCEPHFS=OFF \
 	-D WITH_CEPHFS=OFF \
 	-D WITH_MGR=YES \
+	-D WITH_RDMA=OFF \
 	-D WITH_SPDK=OFF \
 	2>&1 | tee cmake.log
 
 echo start building 
 date
 (cd build; gmake -j$NPROC $BUILDOPTS )
-(cd build; gmake -j$NPROC $BUILDOPTS ceph-disk)
-(cd build; gmake -j$NPROC $BUILDOPTS ceph-detect-init)
 
 echo start testing 
 date

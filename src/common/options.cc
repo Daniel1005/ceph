@@ -242,6 +242,12 @@ int Option::parse_value(
       return -EINVAL;
     }
     *out = addr;
+  } else if (type == Option::TYPE_ADDR) {
+    entity_addrvec_t addr;
+    if (!addr.parse(val.c_str())){
+      return -EINVAL;
+    }
+    *out = addr;
   } else if (type == Option::TYPE_UUID) {
     uuid_d uuid;
     if (!uuid.parse(val.c_str())) {
@@ -319,6 +325,24 @@ void Option::dump(Formatter *f) const
   dump_value("max", max, f);
 
   f->dump_bool("can_update_at_runtime", can_update_at_runtime());
+
+  f->open_array_section("flags");
+  if (has_flag(FLAG_RUNTIME)) {
+    f->dump_string("option", "runtime");
+  }
+  if (has_flag(FLAG_NO_MON_UPDATE)) {
+    f->dump_string("option", "no_mon_update");
+  }
+  if (has_flag(FLAG_STARTUP)) {
+    f->dump_string("option", "startup");
+  }
+  if (has_flag(FLAG_CLUSTER_CREATE)) {
+    f->dump_string("option", "cluster_create");
+  }
+  if (has_flag(FLAG_CREATE)) {
+    f->dump_string("option", "create");
+  }
+  f->close_section();
 }
 
 std::string Option::to_str(const Option::value_t& v)
@@ -536,6 +560,10 @@ std::vector<Option> get_global_options() {
     .set_long_description("This is normally true for daemons and values for libraries.")
     .add_service({"mon", "mgr", "osd", "mds"})
     .add_tag("service"),
+
+    Option("crash_dir", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("/var/lib/ceph/crash")
+    .set_description("Directory where crash reports are archived"),
 
     // restapi
     Option("restapi_log_level", Option::TYPE_STR, Option::LEVEL_ADVANCED)
@@ -896,9 +924,29 @@ std::vector<Option> get_global_options() {
     .set_default(100_M)
     .set_description(""),
 
+    Option("ms_bind_ipv4", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Bind servers to IPV4 address(es)")
+    .add_see_also("ms_bind_ipv6"),
+
     Option("ms_bind_ipv6", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
-    .set_description(""),
+    .set_description("Bind servers to IPV6 address(es)")
+    .add_see_also("ms_bind_ipv4"),
+
+    Option("ms_bind_prefer_ipv4", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("Prefer IPV4 over IPV6 address(es)"),
+
+    Option("ms_bind_msgr1", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description("Bind servers to msgr1 (legacy) protocol address(es)")
+    .add_see_also("ms_bind_msgr2"),
+
+    Option("ms_bind_msgr2", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description("Bind servers to msgr2 (nautilus+) protocol address(es)")
+    .add_see_also("ms_bind_msgr1"),
 
     Option("ms_bind_port_min", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(6800)
@@ -1024,6 +1072,10 @@ std::vector<Option> get_global_options() {
     .set_default(4096)
     .set_description(""),
 
+    Option("ms_async_rdma_support_srq", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
+    .set_description(""),
+
     Option("ms_async_rdma_port_num", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
     .set_default(1)
     .set_description(""),
@@ -1046,6 +1098,14 @@ std::vector<Option> get_global_options() {
 
     Option("ms_async_rdma_dscp", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(96)
+    .set_description(""),
+
+    Option("ms_async_rdma_cm", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(false)
+    .set_description(""),
+
+    Option("ms_async_rdma_type", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+    .set_default("ib")
     .set_description(""),
 
     Option("ms_dpdk_port_id", Option::TYPE_INT, Option::LEVEL_ADVANCED)
@@ -1800,13 +1860,25 @@ std::vector<Option> get_global_options() {
     .set_default(false)
     .set_description(""),
 
+    Option("cephx_require_version", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1)
+    .set_description("Cephx version required (1 = pre-mimic, 2 = mimic+)"),
+
     Option("cephx_cluster_require_signatures", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
 
+    Option("cephx_cluster_require_version", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1)
+    .set_description("Cephx version required by the cluster from clients (1 = pre-mimic, 2 = mimic+)"),
+
     Option("cephx_service_require_signatures", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description(""),
+
+    Option("cephx_service_require_version", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1)
+    .set_description("Cephx version required from ceph services (1 = pre-mimic, 2 = mimic+)"),
 
     Option("cephx_sign_messages", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
@@ -2313,9 +2385,9 @@ std::vector<Option> get_global_options() {
     .set_flag(Option::FLAG_STARTUP)
     .set_description(""),
 
-    Option("osd_skip_data_digest", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
-    .set_default(true)
-    .set_description(""),
+    Option("osd_skip_data_digest", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("Do not store full-object checksums if the backend (bluestore) does its own checksums.  Only usable with all BlueStore OSDs."),
 
     Option("osd_op_queue", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("wpq")
@@ -2856,10 +2928,6 @@ std::vector<Option> get_global_options() {
     .set_default(15_min)
     .set_description(""),
 
-    Option("osd_heartbeat_addr", Option::TYPE_ADDR, Option::LEVEL_ADVANCED)
-    .set_default(entity_addr_t())
-    .set_description(""),
-
     Option("osd_heartbeat_interval", Option::TYPE_INT, Option::LEVEL_ADVANCED)
     .set_default(6)
     .set_min_max(1, 86400)
@@ -3243,10 +3311,6 @@ std::vector<Option> get_global_options() {
     .set_default(false)
     .set_description(""),
 
-    Option("osd_debug_scrub_chance_rewrite_digest", Option::TYPE_UINT, Option::LEVEL_DEV)
-    .set_default(0)
-    .set_description(""),
-
     Option("osd_debug_verify_snaps", Option::TYPE_BOOL, Option::LEVEL_DEV)
     .set_default(false)
     .set_description(""),
@@ -3494,7 +3558,9 @@ std::vector<Option> get_global_options() {
     .set_description("The block size for index partitions. (0 = rocksdb default)"),
 
     Option("mon_rocksdb_options", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("write_buffer_size=33554432,compression=kNoCompression")
+    .set_default("write_buffer_size=33554432,"
+		 "compression=kNoCompression,"
+		 "level_compaction_dynamic_level_bytes=true")
     .set_description(""),
 
     Option("osd_client_op_priority", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
@@ -3743,7 +3809,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("bluefs_allocator", Option::TYPE_STR, Option::LEVEL_DEV)
-    .set_default("stupid")
+    .set_default("bitmap")
     .set_description(""),
 
     Option("bluefs_preextend_wal_files", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
@@ -4050,15 +4116,21 @@ std::vector<Option> get_global_options() {
     .add_see_also("bluestore_cache_size")
     .set_description("Ratio of bluestore cache to devote to kv database (rocksdb)"),
 
-    Option("bluestore_cache_kv_min", Option::TYPE_INT, Option::LEVEL_ADVANCED)
-    .set_default(512_M)
-    .set_description("Minimum memory (bytes) of bluestore_cache_size to devote to kv database (rocksdb)")
+    Option("bluestore_cache_autotune", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
+    .set_default(true)
     .add_see_also("bluestore_cache_size")
-    .set_long_description("A negative value means using bluestore_cache_meta_ratio "
-      "and bluestore_cache_kv_ratio instead of calculating these ratios using "
-      "bluestore_cache_size_* and bluestore_cache_kv_min.  If "
-      "bluestore_cache_size is below bluestore_cache_kv_min "
-      "then this option has no effect."),
+    .add_see_also("bluestore_cache_meta_ratio")
+    .set_description("Automatically tune the ratio of caches while respecting min values."),
+
+    Option("bluestore_cache_autotune_chunk_size", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(33554432)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("The chunk size in bytes to allocate to caches when cache autotune is enabled."),
+
+    Option("bluestore_cache_autotune_interval", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(5)
+    .add_see_also("bluestore_cache_autotune")
+    .set_description("The number of seconds to wait between rebalances when cache autotune is enabled."),
 
     Option("bluestore_kvbackend", Option::TYPE_STR, Option::LEVEL_DEV)
     .set_default("rocksdb")
@@ -4066,7 +4138,7 @@ std::vector<Option> get_global_options() {
     .set_description("Key value database to use for bluestore"),
 
     Option("bluestore_allocator", Option::TYPE_STR, Option::LEVEL_ADVANCED)
-    .set_default("stupid")
+    .set_default("bitmap")
     .set_enum_allowed({"bitmap", "stupid"})
     .set_description("Allocator policy"),
 
@@ -4584,7 +4656,7 @@ std::vector<Option> get_global_options() {
     .set_description(""),
 
     Option("filestore_merge_threshold", Option::TYPE_INT, Option::LEVEL_DEV)
-    .set_default(10)
+    .set_default(-10)
     .set_description(""),
 
     Option("filestore_split_multiple", Option::TYPE_INT, Option::LEVEL_DEV)
@@ -4745,7 +4817,7 @@ std::vector<Option> get_global_options() {
     .set_description("Filesystem path to manager modules."),
 
     Option("mgr_initial_modules", Option::TYPE_STR, Option::LEVEL_BASIC)
-    .set_default("restful status balancer iostat")
+    .set_default("restful status balancer iostat devicehealth")
     .set_flag(Option::FLAG_NO_MON_UPDATE)
     .set_flag(Option::FLAG_CLUSTER_CREATE)
     .add_service("mon")
@@ -4872,6 +4944,10 @@ std::vector<Option> get_global_options() {
     Option("debug_asserts_on_shutdown", Option::TYPE_BOOL,Option::LEVEL_DEV)
     .set_default(false)
     .set_description("Enable certain asserts to check for refcounting bugs on shutdown; see http://tracker.ceph.com/issues/21738"),
+
+    Option("debug_asok_assert_abort", Option::TYPE_BOOL, Option::LEVEL_DEV)
+    .set_default(false)
+    .set_description("allow commands 'assert' and 'abort' via asok for testing crash dumps etc"),
   });
 }
 
@@ -5066,6 +5142,11 @@ std::vector<Option> get_rgw_options() {
           "concurrency of lifecycle maintenance, but requires multiple RGW processes "
           "running on the zone to be utilized."),
 
+    Option("rgw_lc_max_rules", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(1000)
+    .set_description("Max number of lifecycle rules set on one bucket")
+    .set_long_description("Number of lifecycle rules set on one bucket should be limited."),
+
     Option("rgw_lc_debug_interval", Option::TYPE_INT, Option::LEVEL_DEV)
     .set_default(-1)
     .set_description(""),
@@ -5239,6 +5320,15 @@ std::vector<Option> get_rgw_options() {
     Option("rgw_s3_auth_use_keystone", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(false)
     .set_description("Should S3 authentication use Keystone."),
+
+    Option("rgw_s3_auth_order", Option::TYPE_STR, Option::LEVEL_ADVANCED)
+     .set_default("external, local")
+     .set_description("Authentication strategy order to use for s3 authentication")
+     .set_long_description(
+	  "Order of authentication strategies to try for s3 authentication, the allowed "
+	   "options are a comma separated list of engines external, local. The "
+	   "default order is to try all the externally configured engines before "
+	   "attempting local rados based authentication"),
 
     Option("rgw_barbican_url", Option::TYPE_STR, Option::LEVEL_ADVANCED)
     .set_default("")
@@ -5735,6 +5825,20 @@ std::vector<Option> get_rgw_options() {
     .set_default(1000)
     .set_description(""),
 
+    Option("rgw_curl_low_speed_limit", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(1024)
+    .set_long_description(
+        "It contains the average transfer speed in bytes per second that the "
+        "transfer should be below during rgw_curl_low_speed_time seconds for libcurl "
+        "to consider it to be too slow and abort. Set it zero to disable this."),
+
+    Option("rgw_curl_low_speed_time", Option::TYPE_INT, Option::LEVEL_ADVANCED)
+    .set_default(30)
+    .set_long_description(
+        "It contains the time in number seconds that the transfer speed should be below "
+        "the rgw_curl_low_speed_limit for the library to consider it too slow and abort. "
+        "Set it zero to disable this."),
+
     Option("rgw_copy_obj_progress", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
     .set_description("Send progress report through copy operation")
@@ -6158,6 +6262,22 @@ std::vector<Option> get_rgw_options() {
 			  "of RGW instances under heavy use. If you would like "
 			  "to turn off cache expiry, set this value to zero."),
 
+
+    Option("rgw_inject_notify_timeout_probability", Option::TYPE_FLOAT,
+	   Option::LEVEL_DEV)
+    .set_default(0)
+    .add_tag("fault injection")
+    .add_tag("testing")
+    .add_service("rgw")
+    .set_min_max(0.0, 1.0)
+    .set_description("Likelihood of ignoring a notify")
+    .set_long_description("This is the probability that the RGW cache will "
+			  "ignore a cache notify message. It exists to help "
+			  "with the development and testing of cache "
+			  "consistency and recovery improvements. Please "
+			  "do not set it in a production cluster, as it "
+			  "actively causes failures. Set this to a floating "
+			  "point value between 0 and 1."),
   });
 }
 
@@ -6435,6 +6555,26 @@ static std::vector<Option> get_rbd_options() {
     .set_default(0)
     .set_description("the desired limit of IO operations per second"),
 
+    Option("rbd_qos_bps_limit", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("the desired limit of IO bytes per second"),
+
+    Option("rbd_qos_read_iops_limit", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("the desired limit of read operations per second"),
+
+    Option("rbd_qos_write_iops_limit", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("the desired limit of write operations per second"),
+
+    Option("rbd_qos_read_bps_limit", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("the desired limit of read bytes per second"),
+
+    Option("rbd_qos_write_bps_limit", Option::TYPE_UINT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("the desired limit of write bytes per second"),
+
     Option("rbd_discard_on_zeroed_write_same", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)
     .set_description("discard data on zeroed write same instead of writing zero"),
@@ -6507,6 +6647,10 @@ static std::vector<Option> get_rbd_mirror_options() {
     .set_default(1)
     .set_min(1)
     .set_description("interval (in seconds) to throttle images for mirror daemon peer updates"),
+
+    Option("rbd_mirror_image_policy_rebalance_timeout", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
+    .set_default(0)
+    .set_description("number of seconds policy should be idle before trigerring reshuffle (rebalance) of images"),
   });
 }
 
@@ -6565,7 +6709,7 @@ std::vector<Option> get_mds_options() {
 
     Option("mds_beacon_grace", Option::TYPE_FLOAT, Option::LEVEL_ADVANCED)
     .set_default(15)
-    .set_description("tolerance in seconds for missed beacons from monitors"),
+    .set_description("tolerance in seconds for missed MDS beacons to monitors"),
 
     Option("mds_enforce_unique_name", Option::TYPE_BOOL, Option::LEVEL_ADVANCED)
     .set_default(true)

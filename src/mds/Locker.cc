@@ -18,6 +18,7 @@
 #include "MDCache.h"
 #include "Locker.h"
 #include "MDBalancer.h"
+#include "Migrator.h"
 #include "CInode.h"
 #include "CDir.h"
 #include "CDentry.h"
@@ -1903,8 +1904,7 @@ void Locker::file_update_finish(CInode *in, MutationRef& mut, unsigned flags,
   }
   issue_caps_set(need_issue);
 
-  utime_t now = ceph_clock_now();
-  mds->balancer->hit_inode(now, in, META_POP_IWR);
+  mds->balancer->hit_inode(in, META_POP_IWR);
 
   // auth unpin after issuing caps
   mut->cleanup();
@@ -2005,13 +2005,13 @@ bool Locker::issue_caps(CInode *in, Capability *only_cap)
   int nissued = 0;        
 
   // client caps
-  map<client_t, Capability*>::iterator it;
+  map<client_t, Capability>::iterator it;
   if (only_cap)
     it = in->client_caps.find(only_cap->get_client());
   else
     it = in->client_caps.begin();
   for (; it != in->client_caps.end(); ++it) {
-    Capability *cap = it->second;
+    Capability *cap = &it->second;
     if (cap->is_stale())
       continue;
 
@@ -2110,10 +2110,8 @@ void Locker::issue_truncate(CInode *in)
 {
   dout(7) << "issue_truncate on " << *in << dendl;
   
-  for (map<client_t, Capability*>::iterator it = in->client_caps.begin();
-       it != in->client_caps.end();
-       ++it) {
-    Capability *cap = it->second;
+  for (auto &p : in->client_caps) {
+    Capability *cap = &p.second;
     MClientCaps *m = new MClientCaps(CEPH_CAP_OP_TRUNC,
 				     in->ino(),
 				     in->find_snaprealm()->inode->ino(),
@@ -2122,7 +2120,7 @@ void Locker::issue_truncate(CInode *in)
 				     cap->get_mseq(),
                                      mds->get_osd_epoch_barrier());
     in->encode_cap_message(m, cap);			     
-    mds->send_message_client_counted(m, it->first);
+    mds->send_message_client_counted(m, p.first);
   }
 
   // should we increase max_size?
@@ -2305,7 +2303,7 @@ public:
 uint64_t Locker::calc_new_max_size(CInode::mempool_inode *pi, uint64_t size)
 {
   uint64_t new_max = (size + 1) << 1;
-  uint64_t max_inc = g_conf->mds_client_writeable_range_max_inc_objs;
+  uint64_t max_inc = g_conf()->mds_client_writeable_range_max_inc_objs;
   if (max_inc > 0) {
     max_inc *= pi->layout.object_size;
     new_max = std::min(new_max, size + max_inc);
@@ -2328,14 +2326,12 @@ void Locker::calc_new_client_ranges(CInode *in, uint64_t size,
 
   // increase ranges as appropriate.
   // shrink to 0 if no WR|BUFFER caps issued.
-  for (map<client_t,Capability*>::iterator p = in->client_caps.begin();
-       p != in->client_caps.end();
-       ++p) {
-    if ((p->second->issued() | p->second->wanted()) & (CEPH_CAP_FILE_WR|CEPH_CAP_FILE_BUFFER)) {
-      client_writeable_range_t& nr = (*new_ranges)[p->first];
+  for (const auto &p : in->get_client_caps()) {
+    if ((p.second.issued() | p.second.wanted()) & (CEPH_CAP_FILE_WR|CEPH_CAP_FILE_BUFFER)) {
+      client_writeable_range_t& nr = (*new_ranges)[p.first];
       nr.range.first = 0;
-      if (latest->client_ranges.count(p->first)) {
-	client_writeable_range_t& oldr = latest->client_ranges[p->first];
+      if (latest->client_ranges.count(p.first)) {
+	client_writeable_range_t& oldr = latest->client_ranges[p.first];
 	if (ms > oldr.range.last)
 	  *max_increased = true;
 	nr.range.last = std::max(ms, oldr.range.last);
@@ -2481,14 +2477,14 @@ void Locker::share_inode_max_size(CInode *in, Capability *only_cap)
    * the cap later.
    */
   dout(10) << "share_inode_max_size on " << *in << dendl;
-  map<client_t, Capability*>::iterator it;
+  map<client_t, Capability>::iterator it;
   if (only_cap)
     it = in->client_caps.find(only_cap->get_client());
   else
     it = in->client_caps.begin();
   for (; it != in->client_caps.end(); ++it) {
     const client_t client = it->first;
-    Capability *cap = it->second;
+    Capability *cap = &it->second;
     if (cap->is_suppress())
       continue;
     if (cap->pending() & (CEPH_CAP_FILE_WR|CEPH_CAP_FILE_BUFFER)) {
@@ -2717,11 +2713,11 @@ void Locker::handle_client_caps(MClientCaps *m)
       mds->mdlog->get_current_segment()->touched_sessions.insert(session->info.inst.name);
 
       if (session->get_num_trim_flushes_warnings() > 0 &&
-	  session->get_num_completed_flushes() * 2 < g_conf->mds_max_completed_flushes)
+	  session->get_num_completed_flushes() * 2 < g_conf()->mds_max_completed_flushes)
 	session->reset_num_trim_flushes_warnings();
     } else {
       if (session->get_num_completed_flushes() >=
-	  (g_conf->mds_max_completed_flushes << session->get_num_trim_flushes_warnings())) {
+	  (g_conf()->mds_max_completed_flushes << session->get_num_trim_flushes_warnings())) {
 	session->inc_num_trim_flushes_warnings();
 	stringstream ss;
 	ss << "client." << session->get_client() << " does not advance its oldest_flush_tid ("
@@ -2742,7 +2738,16 @@ void Locker::handle_client_caps(MClientCaps *m)
       mdcache->wait_replay_cap_reconnect(m->get_ino(), new C_MDS_RetryMessage(mds, m));
       return;
     }
-    dout(1) << "handle_client_caps on unknown ino " << m->get_ino() << ", dropping" << dendl;
+
+    /*
+     * "handle_client_caps on unknown ino xxx” is normal after migrating a subtree
+     * Sequence of events that cause this are:
+     *   - client sends caps message to mds.a
+     *   - mds finishes subtree migration, send cap export to client
+     *   - mds trim its cache
+     *   - mds receives cap messages from client
+     */
+    dout(7) << "handle_client_caps on unknown ino " << m->get_ino() << ", dropping" << dendl;
     m->put();
     return;
   }
@@ -3630,7 +3635,7 @@ void Locker::caps_tick()
     // snap inodes that needs flush are auth pinned, they affect
     // subtree/difrarg freeze.
     utime_t cutoff = now;
-    cutoff -= g_conf->mds_freeze_tree_timeout / 3;
+    cutoff -= g_conf()->mds_freeze_tree_timeout / 3;
 
     CInode *last = need_snapflush_inodes.back();
     while (!need_snapflush_inodes.empty()) {
@@ -4702,7 +4707,7 @@ void Locker::scatter_tick()
 	       << *lock << " " << *lock->get_parent() << dendl;
       continue;
     }
-    if (now - lock->get_update_stamp() < g_conf->mds_scatter_nudge_interval)
+    if (now - lock->get_update_stamp() < g_conf()->mds_scatter_nudge_interval)
       break;
     updated_scatterlocks.pop_front();
     scatter_nudge(lock, 0);

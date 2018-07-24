@@ -154,7 +154,7 @@ ostream& operator<<(ostream& out, const CInode& in)
 
   if (in.inode.is_dir()) {
     out << " " << in.inode.dirstat;
-    if (g_conf->mds_debug_scatterstat && in.is_projected()) {
+    if (g_conf()->mds_debug_scatterstat && in.is_projected()) {
       const CInode::mempool_inode *pi = in.get_projected_inode();
       out << "->" << pi->dirstat;
     }
@@ -168,7 +168,7 @@ ostream& operator<<(ostream& out, const CInode& in)
   out << " " << in.inode.rstat;
   if (!(in.inode.rstat == in.inode.accounted_rstat))
     out << "/" << in.inode.accounted_rstat;
-  if (g_conf->mds_debug_scatterstat && in.is_projected()) {
+  if (g_conf()->mds_debug_scatterstat && in.is_projected()) {
     const CInode::mempool_inode *pi = in.get_projected_inode();
     out << "->" << pi->rstat;
     if (!(pi->rstat == pi->accounted_rstat))
@@ -210,16 +210,16 @@ ostream& operator<<(ostream& out, const CInode& in)
 
   if (!in.get_client_caps().empty()) {
     out << " caps={";
-    for (map<client_t,Capability*>::const_iterator it = in.get_client_caps().begin();
-         it != in.get_client_caps().end();
-         ++it) {
-      if (it != in.get_client_caps().begin()) out << ",";
-      out << it->first << "="
-	  << ccap_string(it->second->pending());
-      if (it->second->issued() != it->second->pending())
-	out << "/" << ccap_string(it->second->issued());
-      out << "/" << ccap_string(it->second->wanted())
-	  << "@" << it->second->get_last_sent();
+    bool first = true;
+    for (const auto &p : in.get_client_caps()) {
+      if (!first) out << ",";
+      out << p.first << "="
+	  << ccap_string(p.second.pending());
+      if (p.second.issued() != p.second.pending())
+	out << "/" << ccap_string(p.second.issued());
+      out << "/" << ccap_string(p.second.wanted())
+	  << "@" << p.second.get_last_sent();
+      first = false;
     }
     out << "}";
     if (in.get_loner() >= 0 || in.get_wanted_loner() >= 0) {
@@ -263,14 +263,36 @@ ostream& operator<<(ostream& out, const CInode::scrub_stamp_info_t& si)
   return out;
 }
 
-
+CInode::CInode(MDCache *c, bool auth, snapid_t f, snapid_t l)
+  :
+    mdcache(c),
+    first(f), last(l),
+    item_dirty(this),
+    item_caps(this),
+    item_open_file(this),
+    item_dirty_parent(this),
+    item_dirty_dirfrag_dir(this),
+    item_dirty_dirfrag_nest(this),
+    item_dirty_dirfrag_dirfragtree(this),
+    pop(c->decayrate),
+    versionlock(this, &versionlock_type),
+    authlock(this, &authlock_type),
+    linklock(this, &linklock_type),
+    dirfragtreelock(this, &dirfragtreelock_type),
+    filelock(this, &filelock_type),
+    xattrlock(this, &xattrlock_type),
+    snaplock(this, &snaplock_type),
+    nestlock(this, &nestlock_type),
+    flocklock(this, &flocklock_type),
+    policylock(this, &policylock_type)
+{
+  if (auth) state_set(STATE_AUTH);
+}
 
 void CInode::print(ostream& out)
 {
   out << *this;
 }
-
-
 
 void CInode::add_need_snapflush(CInode *snapin, snapid_t snapid, client_t client)
 {
@@ -769,6 +791,9 @@ void CInode::close_dirfrag(frag_t fg)
     dir->state_clear(CDir::STATE_STICKY);
     dir->put(CDir::PIN_STICKY);
   }
+
+  if (dir->is_subtree_root())
+    num_subtree_roots--;
   
   // dump any remaining dentries, for debugging purposes
   for (const auto &p : dir->items)
@@ -787,21 +812,22 @@ void CInode::close_dirfrags()
 
 bool CInode::has_subtree_root_dirfrag(int auth)
 {
-  for (const auto &p : dirfrags) {
-    if (p.second->is_subtree_root() &&
-	(auth == -1 || p.second->dir_auth.first == auth))
+  if (num_subtree_roots > 0) {
+    if (auth == -1)
       return true;
+    for (const auto &p : dirfrags) {
+      if (p.second->is_subtree_root() &&
+	  p.second->dir_auth.first == auth)
+	return true;
+    }
   }
   return false;
 }
 
 bool CInode::has_subtree_or_exporting_dirfrag()
 {
-  for (const auto &p : dirfrags) {
-    if (p.second->is_subtree_root() ||
-	p.second->state_test(CDir::STATE_EXPORTING))
-      return true;
-  }
+  if (num_subtree_roots > 0 || num_exporting_dirs > 0)
+    return true;
   return false;
 }
 
@@ -1055,6 +1081,9 @@ struct C_IO_Inode_Stored : public CInodeIOContext {
   void finish(int r) override {
     in->_stored(r, version, fin);
   }
+  void print(ostream& out) const override {
+    out << "inode_store(" << in->ino() << ")";
+  }
 };
 
 object_t InodeStoreBase::get_object_name(inodeno_t ino, frag_t fg, const char *suffix)
@@ -1147,6 +1176,9 @@ struct C_IO_Inode_Fetched : public CInodeIOContext {
     // Ignore 'r', because we fetch from two places, so r is usually ENOENT
     in->_fetched(bl, bl2, fin);
   }
+  void print(ostream& out) const override {
+    out << "inode_fetch(" << in->ino() << ")";
+  }
 };
 
 void CInode::fetch(MDSInternalContextBase *fin)
@@ -1235,6 +1267,9 @@ struct C_IO_Inode_StoredBacktrace : public CInodeIOContext {
   C_IO_Inode_StoredBacktrace(CInode *i, version_t v, Context *f) : CInodeIOContext(i), version(v), fin(f) {}
   void finish(int r) override {
     in->_stored_backtrace(r, version, fin);
+  }
+  void print(ostream& out) const override {
+    out << "backtrace_store(" << in->ino() << ")";
   }
 };
 
@@ -1397,7 +1432,7 @@ void CInode::verify_diri_backtrace(bufferlist &bl, int err)
   if (err) {
     MDSRank *mds = mdcache->mds;
     mds->clog->error() << "bad backtrace on directory inode " << ino();
-    assert(!"bad backtrace" == (g_conf->mds_verify_backtrace > 1));
+    assert(!"bad backtrace" == (g_conf()->mds_verify_backtrace > 1));
 
     mark_dirty_parent(mds->mdlog->get_current_segment(), false);
     mds->mdlog->flush();
@@ -1742,7 +1777,7 @@ void CInode::decode_lock_state(int type, bufferlist& bl)
 	    p.second->state_clear(CDir::STATE_DIRTYDFT);
 	}
       }
-      if (g_conf->mds_debug_frag)
+      if (g_conf()->mds_debug_frag)
 	verify_dirfrags();
     }
     break;
@@ -2169,7 +2204,7 @@ void CInode::finish_scatter_gather_update(int type)
 	    pf->fragstat.nsubdirs < 0) {
 	  clog->error() << "bad/negative dir size on "
 	      << dir->dirfrag() << " " << pf->fragstat;
-	  assert(!"bad/negative fragstat" == g_conf->mds_verify_scatter);
+	  assert(!"bad/negative fragstat" == g_conf()->mds_verify_scatter);
 	  
 	  if (pf->fragstat.nfiles < 0)
 	    pf->fragstat.nfiles = 0;
@@ -2206,7 +2241,7 @@ void CInode::finish_scatter_gather_update(int type)
 	  } else {
 	    clog->error() << "unmatched fragstat on " << ino() << ", inode has "
 			  << pi->dirstat << ", dirfrags have " << dirstat;
-	    assert(!"unmatched fragstat" == g_conf->mds_verify_scatter);
+	    assert(!"unmatched fragstat" == g_conf()->mds_verify_scatter);
 	  }
 	  // trust the dirfrags for now
 	  version_t v = pi->dirstat.version;
@@ -2225,7 +2260,7 @@ void CInode::finish_scatter_gather_update(int type)
         make_path_string(path);
 	clog->error() << "Inconsistent statistics detected: fragstat on inode "
                       << ino() << " (" << path << "), inode has " << pi->dirstat;
-	assert(!"bad/negative fragstat" == g_conf->mds_verify_scatter);
+	assert(!"bad/negative fragstat" == g_conf()->mds_verify_scatter);
 
 	if (pi->dirstat.nfiles < 0)
 	  pi->dirstat.nfiles = 0;
@@ -2237,13 +2272,17 @@ void CInode::finish_scatter_gather_update(int type)
 
   case CEPH_LOCK_INEST:
     {
-      fragtree_t tmpdft = dirfragtree;
-      nest_info_t rstat;
-      rstat.rsubdirs = 1;
-      bool rstat_valid = true;
-
       // adjust summation
       assert(is_auth());
+
+      fragtree_t tmpdft = dirfragtree;
+      nest_info_t rstat;
+      bool rstat_valid = true;
+
+      rstat.rsubdirs = 1;
+      if (const sr_t *srnode = get_projected_srnode(); srnode)
+	rstat.rsnaps = srnode->snaps.size();
+
       mempool_inode *pi = get_projected_inode();
       dout(20) << "  orig rstat " << pi->rstat << dendl;
       pi->rstat.version++;
@@ -2313,7 +2352,7 @@ void CInode::finish_scatter_gather_update(int type)
 	    clog->error() << "inconsistent rstat on inode " << ino()
                           << ", inode has " << pi->rstat
                           << ", directory fragments have " << rstat;
-	    assert(!"unmatched rstat" == g_conf->mds_verify_scatter);
+	    assert(!"unmatched rstat" == g_conf()->mds_verify_scatter);
 	  }
 	  // trust the dirfrag for now
 	  version_t v = pi->rstat.version;
@@ -2586,7 +2625,7 @@ void CInode::adjust_nested_auth_pins(int a, void *by)
 	   << auth_pins << "+" << nested_auth_pins << dendl;
   assert(nested_auth_pins >= 0);
 
-  if (g_conf->mds_debug_auth_pins) {
+  if (g_conf()->mds_debug_auth_pins) {
     // audit
     int s = 0;
     for (const auto &p : dirfrags) {
@@ -2650,7 +2689,7 @@ CInode::mempool_old_inode& CInode::cow_old_inode(snapid_t follows, bool cow_head
 
   old.inode.trim_client_ranges(follows);
 
-  if (g_conf->mds_snap_rstat &&
+  if (g_conf()->mds_snap_rstat &&
       !(old.inode.rstat == old.inode.accounted_rstat))
     dirty_old_rstats.insert(follows);
   
@@ -2836,17 +2875,16 @@ client_t CInode::calc_ideal_loner()
   
   int n = 0;
   client_t loner = -1;
-  for (map<client_t,Capability*>::iterator it = client_caps.begin();
-       it != client_caps.end();
-       ++it) 
-    if (!it->second->is_stale() &&
-	((it->second->wanted() & (CEPH_CAP_ANY_WR|CEPH_CAP_FILE_WR|CEPH_CAP_FILE_RD)) ||
+  for (const auto &p : client_caps) {
+    if (!p.second.is_stale() &&
+	((p.second.wanted() & (CEPH_CAP_ANY_WR|CEPH_CAP_FILE_WR|CEPH_CAP_FILE_RD)) ||
 	 (inode.is_dir() && !has_subtree_root_dirfrag()))) {
       if (n)
 	return -1;
       n++;
-      loner = it->first;
+      loner = p.first;
     }
+  }
   return loner;
 }
 
@@ -2998,26 +3036,27 @@ Capability *CInode::add_client_cap(client_t client, Session *session, SnapRealm 
     if (parent)
       parent->dir->adjust_num_inodes_with_caps(1);
   }
-  
-  Capability *cap = new Capability(this, ++mdcache->last_cap_id, client);
-  assert(client_caps.count(client) == 0);
-  client_caps[client] = cap;
+
+  uint64_t cap_id = ++mdcache->last_cap_id;
+  auto ret = client_caps.emplace(std::piecewise_construct, std::forward_as_tuple(client),
+                                 std::forward_as_tuple(this, cap_id, client));
+  assert(ret.second == true);
+  Capability *cap = &ret.first->second;
 
   session->add_cap(cap);
   if (session->is_stale())
     cap->mark_stale();
-  
   cap->client_follows = first-1;
-  
   containing_realm->add_cap(client, cap);
-  
+
   return cap;
 }
 
 void CInode::remove_client_cap(client_t client)
 {
-  assert(client_caps.count(client) == 1);
-  Capability *cap = client_caps[client];
+  auto it = client_caps.find(client);
+  assert(it != client_caps.end());
+  Capability *cap = &it->second;
   
   cap->item_session_caps.remove_myself();
   cap->item_revoking_caps.remove_myself();
@@ -3030,8 +3069,7 @@ void CInode::remove_client_cap(client_t client)
   if (cap->wanted())
     adjust_num_caps_wanted(-1);
 
-  delete cap;
-  client_caps.erase(client);
+  client_caps.erase(it);
   if (client_caps.empty()) {
     dout(10) << __func__ << " last cap, leaving realm " << *containing_realm << dendl;
     put(PIN_CAPS);
@@ -3056,11 +3094,9 @@ void CInode::move_to_realm(SnapRealm *realm)
 {
   dout(10) << __func__ << " joining realm " << *realm
 	   << ", leaving realm " << *containing_realm << dendl;
-  for (map<client_t,Capability*>::iterator q = client_caps.begin();
-       q != client_caps.end();
-       ++q) {
-    containing_realm->remove_cap(q->first, q->second);
-    realm->add_cap(q->first, q->second);
+  for (auto& p : client_caps) {
+    containing_realm->remove_cap(p.first, &p.second);
+    realm->add_cap(p.first, &p.second);
   }
   item_caps.remove_myself();
   realm->inodes_with_caps.push_back(&item_caps);
@@ -3098,10 +3134,8 @@ void CInode::clear_client_caps_after_export()
 
 void CInode::export_client_caps(map<client_t,Capability::Export>& cl)
 {
-  for (map<client_t,Capability*>::iterator it = client_caps.begin();
-       it != client_caps.end();
-       ++it) {
-    cl[it->first] = it->second->make_export();
+  for (const auto &p : client_caps) {
+    cl[p.first] = p.second.make_export();
   }
 }
 
@@ -3190,16 +3224,14 @@ int CInode::get_caps_issued(int *ploner, int *pother, int *pxlocker,
     loner_cap = -1;
   }
 
-  for (map<client_t,Capability*>::const_iterator it = client_caps.begin();
-       it != client_caps.end();
-       ++it) {
-    int i = it->second->issued();
+  for (const auto &p : client_caps) {
+    int i = p.second.issued();
     c |= i;
-    if (it->first == loner_cap)
+    if (p.first == loner_cap)
       loner |= i;
     else
       other |= i;
-    xlocker |= get_xlocker_mask(it->first) & i;
+    xlocker |= get_xlocker_mask(p.first) & i;
   }
   if (ploner) *ploner = (loner >> shift) & mask;
   if (pother) *pother = (other >> shift) & mask;
@@ -3209,11 +3241,10 @@ int CInode::get_caps_issued(int *ploner, int *pother, int *pxlocker,
 
 bool CInode::is_any_caps_wanted() const
 {
-  for (map<client_t,Capability*>::const_iterator it = client_caps.begin();
-       it != client_caps.end();
-       ++it)
-    if (it->second->wanted())
+  for (const auto &p : client_caps) {
+    if (p.second.wanted())
       return true;
+  }
   return false;
 }
 
@@ -3221,13 +3252,11 @@ int CInode::get_caps_wanted(int *ploner, int *pother, int shift, int mask) const
 {
   int w = 0;
   int loner = 0, other = 0;
-  for (map<client_t,Capability*>::const_iterator it = client_caps.begin();
-       it != client_caps.end();
-       ++it) {
-    if (!it->second->is_stale()) {
-      int t = it->second->wanted();
+  for (const auto &p : client_caps) {
+    if (!p.second.is_stale()) {
+      int t = p.second.wanted();
       w |= t;
-      if (it->first == loner_cap)
+      if (p.first == loner_cap)
 	loner |= t;
       else
 	other |= t;	
@@ -3853,11 +3882,11 @@ void CInode::encode_export(bufferlist& bl)
   get(PIN_TEMPEXPORTING);
 }
 
-void CInode::finish_export(utime_t now)
+void CInode::finish_export()
 {
   state &= MASK_STATE_EXPORT_KEPT;
 
-  pop.zero(now);
+  pop.zero();
 
   // just in case!
   //dirlock.clear_updated();
@@ -3887,7 +3916,7 @@ void CInode::decode_import(bufferlist::const_iterator& p,
     mark_dirty_parent(ls);
   }
 
-  decode(pop, ceph_clock_now(), p);
+  decode(pop, p);
 
   decode(get_replicas(), p);
   if (is_replicated())
@@ -4282,6 +4311,9 @@ next:
 	}
       }
       nest_info.rsubdirs++; // it gets one to account for self
+      if (const sr_t *srnode = in->get_projected_srnode(); srnode)
+	nest_info.rsnaps += srnode->snaps.size();
+
       // ...and that their sum matches our inode settings
       if (!dir_info.same_sums(in->inode.dirstat) ||
 	  !nest_info.same_sums(in->inode.rstat)) {
@@ -4511,7 +4543,7 @@ void CInode::dump(Formatter *f, int flags) const
     f->open_array_section("client_caps");
     for (const auto &p : client_caps) {
       auto &client = p.first;
-      auto &cap = p.second;
+      auto cap = &p.second;
       f->open_object_section("client_cap");
       f->dump_int("client_id", client.v);
       f->dump_string("pending", ccap_string(cap->pending()));
@@ -4740,7 +4772,7 @@ int64_t CInode::get_backtrace_pool() const
 
 void CInode::maybe_export_pin(bool update)
 {
-  if (!g_conf->mds_bal_export_pin)
+  if (!g_conf()->mds_bal_export_pin)
     return;
   if (!is_dir() || !is_normal())
     return;

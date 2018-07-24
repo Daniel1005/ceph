@@ -65,6 +65,7 @@ template <typename I>
 ImageMap<I>::~ImageMap() {
   assert(m_async_op_tracker.empty());
   assert(m_timer_task == nullptr);
+  assert(m_rebalance_task == nullptr);
 }
 
 template <typename I>
@@ -199,6 +200,15 @@ void ImageMap<I>::process_updates() {
 template <typename I>
 void ImageMap<I>::schedule_update_task() {
   Mutex::Locker timer_lock(m_threads->timer_lock);
+  schedule_update_task(m_threads->timer_lock);
+}
+
+template <typename I>
+void ImageMap<I>::schedule_update_task(const Mutex &timer_lock) {
+  assert(m_threads->timer_lock.is_locked());
+
+  schedule_rebalance_task();
+
   if (m_timer_task != nullptr) {
     return;
   }
@@ -218,11 +228,62 @@ void ImageMap<I>::schedule_update_task() {
     });
 
   CephContext *cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
-  double after = cct->_conf->get_val<double>("rbd_mirror_image_policy_update_throttle_interval");
+  double after = cct->_conf.get_val<double>("rbd_mirror_image_policy_update_throttle_interval");
 
   dout(20) << "scheduling image check update (" << m_timer_task << ")"
            << " after " << after << " second(s)" << dendl;
   m_threads->timer->add_event_after(after, m_timer_task);
+}
+
+template <typename I>
+void ImageMap<I>::rebalance() {
+  assert(m_rebalance_task == nullptr);
+
+  {
+    Mutex::Locker locker(m_lock);
+    if (m_async_op_tracker.empty() && m_global_image_ids.empty()){
+      dout(20) << "starting rebalance" << dendl;
+
+      std::set<std::string> remap_global_image_ids;
+      m_policy->add_instances({}, &remap_global_image_ids);
+
+      for (auto const &global_image_id : remap_global_image_ids) {
+        schedule_action(global_image_id);
+      }
+    }
+  }
+
+  schedule_update_task(m_threads->timer_lock);
+}
+
+template <typename I>
+void ImageMap<I>::schedule_rebalance_task() {
+  assert(m_threads->timer_lock.is_locked());
+
+  CephContext *cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
+
+  // fetch the updated value of idle timeout for (re)scheduling
+  double resched_after = cct->_conf.get_val<double>(
+    "rbd_mirror_image_policy_rebalance_timeout");
+  if (!resched_after) {
+    return;
+  }
+
+  // cancel existing rebalance task if any before scheduling
+  if (m_rebalance_task != nullptr) {
+    m_threads->timer->cancel_event(m_rebalance_task);
+  }
+
+  m_rebalance_task = new FunctionContext([this](int _) {
+      assert(m_threads->timer_lock.is_locked());
+      m_rebalance_task = nullptr;
+
+      rebalance();
+    });
+
+  dout(20) << "scheduling rebalance (" << m_rebalance_task << ")"
+           << " after " << resched_after << " second(s)" << dendl;
+  m_threads->timer->add_event_after(resched_after, m_rebalance_task);
 }
 
 template <typename I>
@@ -463,7 +524,7 @@ void ImageMap<I>::init(Context *on_finish) {
   dout(20) << dendl;
 
   CephContext *cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
-  std::string policy_type = cct->_conf->get_val<string>("rbd_mirror_image_policy_type");
+  std::string policy_type = cct->_conf.get_val<string>("rbd_mirror_image_policy_type");
 
   if (policy_type == "none" || policy_type == "simple") {
     m_policy.reset(image_map::SimplePolicy::create(m_ioctx));
@@ -499,6 +560,10 @@ void ImageMap<I>::shut_down(Context *on_finish) {
       m_threads->timer->cancel_event(m_timer_task);
       m_timer_task = nullptr;
     }
+    if (m_rebalance_task != nullptr) {
+      m_threads->timer->cancel_event(m_rebalance_task);
+      m_rebalance_task = nullptr;
+    }
   }
 
   wait_for_async_ops(on_finish);
@@ -509,7 +574,7 @@ void ImageMap<I>::filter_instance_ids(
     const std::vector<std::string> &instance_ids,
     std::vector<std::string> *filtered_instance_ids, bool removal) const {
   CephContext *cct = reinterpret_cast<CephContext *>(m_ioctx.cct());
-  std::string policy_type = cct->_conf->get_val<string>("rbd_mirror_image_policy_type");
+  std::string policy_type = cct->_conf.get_val<string>("rbd_mirror_image_policy_type");
 
   if (policy_type != "none") {
     *filtered_instance_ids = instance_ids;

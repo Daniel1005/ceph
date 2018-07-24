@@ -21,6 +21,7 @@
 #include "messages/MOSDPGPushReply.h"
 #include "common/EventTrace.h"
 #include "include/random.h"
+#include "OSD.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
@@ -599,9 +600,6 @@ int ReplicatedBackend::be_deep_scrub(
   uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
                            CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
 
-  bool skip_data_digest = store->has_builtin_csum() &&
-    g_conf->osd_skip_data_digest;
-
   utime_t sleeptime;
   sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
   if (sleeptime != utime_t()) {
@@ -629,7 +627,7 @@ int ReplicatedBackend::be_deep_scrub(
       o.read_error = true;
       return 0;
     }
-    if (r > 0 && !skip_data_digest) {
+    if (r > 0) {
       pos.data_hash << bl;
     }
     pos.data_pos += r;
@@ -640,10 +638,8 @@ int ReplicatedBackend::be_deep_scrub(
     }
     // done with bytes
     pos.data_pos = -1;
-    if (!skip_data_digest) {
-      o.digest = pos.data_hash.digest();
-      o.digest_present = true;
-    }
+    o.digest = pos.data_hash.digest();
+    o.digest_present = true;
     dout(20) << __func__ << "  " << poid << " done with data, digest 0x"
 	     << std::hex << o.digest << std::dec << dendl;
   }
@@ -682,7 +678,7 @@ int ReplicatedBackend::be_deep_scrub(
   } else {
     iter->seek_to_first();
   }
-  int max = g_conf->osd_deep_scrub_keys;
+  int max = g_conf()->osd_deep_scrub_keys;
   while (iter->status() == 0 && iter->valid()) {
     pos.omap_bytes += iter->value().length();
     ++pos.omap_keys;
@@ -1057,8 +1053,11 @@ void ReplicatedBackend::do_repop(OpRequestRef op)
     update_snaps = true;
   }
 
+  // flag set to true during async recovery
+  bool async = false;
   pg_missing_tracker_t pmissing = get_parent()->get_local_missing();
   if (pmissing.is_missing(soid)) {
+    async = true;
     dout(30) << __func__ << " is_missing " << pmissing.is_missing(soid) << dendl;
     for (auto &&e: log) {
       dout(30) << " add_next_event entry " << e << dendl;
@@ -1074,7 +1073,8 @@ void ReplicatedBackend::do_repop(OpRequestRef op)
     m->pg_trim_to,
     m->pg_roll_forward_to,
     update_snaps,
-    rm->localt);
+    rm->localt,
+    async);
 
   rm->opt.register_on_commit(
     parent->bless_context(

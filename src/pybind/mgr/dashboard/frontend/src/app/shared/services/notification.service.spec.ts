@@ -5,31 +5,27 @@ import { ToastsManager } from 'ng2-toastr';
 
 import { NotificationType } from '../enum/notification-type.enum';
 import { FinishedTask } from '../models/finished-task';
+import { configureTestBed } from '../unit-test-helper';
 import { NotificationService } from './notification.service';
 import { TaskManagerMessageService } from './task-manager-message.service';
 
 describe('NotificationService', () => {
   let notificationService: NotificationService;
-  const fakeService = {
-    // ToastsManager
+  const toastFakeService = {
     error: () => true,
     info: () => true,
-    success: () => true,
-    // TaskManagerMessageService
-    getDescription: () => true,
-    getErrorMessage: () => true,
-    getSuccessMessage: () => true
+    success: () => true
   };
 
-  beforeEach(() => {
-    TestBed.configureTestingModule({
-      providers: [
-        NotificationService,
-        { provide: TaskManagerMessageService, useValue: fakeService },
-        { provide: ToastsManager, useValue: fakeService }
-      ]
-    });
+  configureTestBed({
+    providers: [
+      NotificationService,
+      TaskManagerMessageService,
+      { provide: ToastsManager, useValue: toastFakeService }
+    ]
+  });
 
+  beforeEach(() => {
     notificationService = TestBed.get(NotificationService);
     notificationService.removeAll();
   });
@@ -123,7 +119,11 @@ describe('NotificationService', () => {
     'should show a error task notification',
     fakeAsync(() => {
       const task = _.assign(new FinishedTask(), {
-        success: false
+        success: false,
+        metadata: 'failed',
+        exception: {
+          code: 404
+        }
       });
       notificationService.notifyTask(task);
       tick(100);

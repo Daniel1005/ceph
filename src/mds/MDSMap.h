@@ -126,7 +126,7 @@ public:
     int32_t inc;
     MDSMap::DaemonState state;
     version_t state_seq;
-    entity_addr_t addr;
+    entity_addrvec_t addrs;
     utime_t laggy_since;
     mds_rank_t standby_for_rank;
     std::string standby_for_name;
@@ -145,7 +145,9 @@ public:
     bool laggy() const { return !(laggy_since == utime_t()); }
     void clear_laggy() { laggy_since = utime_t(); }
 
-    entity_inst_t get_inst() const { return entity_inst_t(entity_name_t::MDS(rank), addr); }
+    entity_addrvec_t get_addrs() const {
+      return addrs;
+    }
 
     void encode(bufferlist& bl, uint64_t features) const {
       if ((features & CEPH_FEATURE_MDSENC) == 0 ) encode_unversioned(bl);
@@ -186,6 +188,8 @@ protected:
   __u32 session_timeout = 60;
   __u32 session_autoclose = 300;
   uint64_t max_file_size = 1ULL<<40; /* 1TB */
+
+  int8_t min_compat_client = -1;
 
   std::vector<int64_t> data_pools;  // file data pools available to clients (via an ioctl).  first is the default.
   int64_t cas_pool = -1;            // where CAS objects go
@@ -247,6 +251,9 @@ public:
 
   uint64_t get_max_filesize() const { return max_file_size; }
   void set_max_filesize(uint64_t m) { max_file_size = m; }
+
+  uint8_t get_min_compat_client() const { return min_compat_client; }
+  void set_min_compat_client(uint8_t version) { min_compat_client = version; }
   
   int get_flags() const { return flags; }
   bool test_flag(int f) const { return flags & f; }
@@ -617,30 +624,11 @@ public:
    * Get the MDS daemon entity_inst_t for a rank
    * known to be up.
    */
-  const entity_inst_t get_inst(mds_rank_t m) {
+  entity_addrvec_t get_addrs(mds_rank_t m) {
     assert(up.count(m));
-    return mds_info[up[m]].get_inst();
-  }
-  const entity_addr_t get_addr(mds_rank_t m) {
-    assert(up.count(m));
-    return mds_info[up[m]].addr;
+    return mds_info[up[m]].get_addrs();
   }
 
-  /**
-   * Get the MDS daemon entity_inst_t for a rank,
-   * if it is up.
-   * 
-   * @return true if the rank was up and the inst
-   *         was populated, else false.
-   */
-  bool get_inst(mds_rank_t m, entity_inst_t& inst) {
-    if (up.count(m)) {
-      inst = get_inst(m);
-      return true;
-    } 
-    return false;
-  }
-  
   mds_rank_t get_rank_gid(mds_gid_t gid) const {
     if (mds_info.count(gid)) {
       return mds_info.at(gid).rank;

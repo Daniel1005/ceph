@@ -34,12 +34,13 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wpointer-arith -Werror=format-security -fno
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ftemplate-depth-1024")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wnon-virtual-dtor")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-ignored-qualifiers")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unknown-pragmas")
 if(CMAKE_CXX_COMPILER_ID STREQUAL GNU)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -rdynamic")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wstrict-null-sentinel -Woverloaded-virtual")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-new-ttp-matching")
-  if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS)
+  if(NOT WITH_OSD_INSTRUMENT_FUNCTIONS AND NOT HAVE_SEASTAR)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
   endif()
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL Clang)
@@ -296,11 +297,6 @@ if(HAVE_XIO)
   list(APPEND EXTRALIBS ${XIO_LIBRARY} pthread)
 endif(HAVE_XIO)
 
-if(HAVE_RDMA)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -I${RDMA_INCLUDE_DIR}")
-  list(APPEND EXTRALIBS ${RDMA_LIBRARIES} pthread)
-endif(HAVE_RDMA)
-
 # sort out which allocator to use
 if(ALLOCATOR STREQUAL "tcmalloc")
   set(ALLOC_LIBS ${GPERFTOOLS_TCMALLOC_LIBRARY})
@@ -387,6 +383,12 @@ include_directories("${CMAKE_SOURCE_DIR}/src/dmclock/support/src")
 # needed for source files that friend unit tests (e.g., using FRIEND_TEST)
 include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/src/googletest/googletest/include")
 
+if(WITH_SEASTAR)
+  set(SEASTAR_ENABLE_TESTS OFF CACHE BOOL "disable seastar testing")
+  add_subdirectory(seastar)
+  add_subdirectory(crimson)
+endif()
+
 set(xio_common_srcs)
 if(HAVE_XIO)
   list(APPEND xio_common_srcs
@@ -402,9 +404,11 @@ if(HAVE_RDMA)
   list(APPEND async_rdma_common_srcs
     msg/async/rdma/Infiniband.cc
     msg/async/rdma/RDMAConnectedSocketImpl.cc
+    msg/async/rdma/RDMAIWARPConnectedSocketImpl.cc
     msg/async/rdma/RDMAServerSocketImpl.cc
+    msg/async/rdma/RDMAIWARPServerSocketImpl.cc
     msg/async/rdma/RDMAStack.cc)
-endif(HAVE_RDMA)
+endif()
 
 add_library(common_buffer_obj OBJECT
   common/buffer.cc)
@@ -513,6 +517,7 @@ set(libcommon_files
   common/ceph_frag.cc
   common/options.cc
   common/config.cc
+  common/config_values.cc
   common/utf8.c
   common/mime.c
   common/strtol.cc
@@ -540,6 +545,8 @@ set(libcommon_files
   common/dns_resolve.cc
   common/hostname.cc
   common/util.cc
+  common/PriorityCache.cc
+  common/SubProcess.cc
   librbd/Features.cc
   arch/probe.cc
   ${auth_files}
@@ -642,8 +649,14 @@ set(ceph_common_deps
   ${CRYPTO_LIBS}
   ${CMAKE_THREAD_LIBS_INIT}
   ${CMAKE_DL_LIBS})
-if(HAVE_RDMA)
-  list(APPEND ceph_common_deps ${RDMA_LIBRARY})
+if(HAVE_UDEV)
+  list(APPEND ceph_common_deps ${UDEV_LIBRARIES})
+endif()
+if(HAVE_VERBS)
+  list(APPEND ceph_common_deps IBVerbs::verbs)
+endif()
+if(HAVE_RDMACM)
+  list(APPEND ceph_common_deps RDMA::RDMAcm)
 endif()
 if(NOT WITH_SYSTEM_BOOST)
   list(APPEND ceph_common_deps ${ZLIB_LIBRARIES})
@@ -654,7 +667,6 @@ endif()
 
 set_source_files_properties(${CMAKE_SOURCE_DIR}/src/ceph_ver.c
   ${CMAKE_SOURCE_DIR}/src/common/version.cc
-  ${CMAKE_SOURCE_DIR}/src/test/encoding/ceph_dencoder.cc
   APPEND PROPERTY OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/src/include/ceph_ver.h)
 
 if(HAVE_ARMV8_CRC)
@@ -679,14 +691,9 @@ if(WITH_DPDK)
     msg/async/dpdk/ethernet.cc)
   add_library(common_async_dpdk STATIC
     ${common_async_dpdk_files})
-  # to ready the dpdk header files
-  add_dependencies(common_async_dpdk
-    ${DPDK_LIBRARIES})
   list(APPEND ceph_common_deps common_async_dpdk)
   target_link_libraries(common_async_dpdk
     ${DPDK_LIBRARIES})
-  set_target_properties(common_async_dpdk PROPERTIES
-    COMPILE_FLAGS "-march=native -I${DPDK_INCLUDE_DIR}")
 endif(WITH_DPDK)
 
 add_library(common STATIC ${ceph_common_objs})
@@ -769,8 +776,7 @@ endif (WITH_MGR)
 set(librados_config_srcs
   librados-config.cc)
 add_executable(librados-config ${librados_config_srcs})
-target_link_libraries(librados-config librados global ${BLKID_LIBRARIES} ${RDMA_LIBRARIES}
-  ${CMAKE_DL_LIBS})
+target_link_libraries(librados-config librados global ${BLKID_LIBRARIES} ${CMAKE_DL_LIBS})
 
 install(TARGETS librados-config DESTINATION bin)
 
@@ -781,64 +787,7 @@ if(NOT CEPH_BUILD_VIRTUALENV)
 endif()
 
 add_subdirectory(pybind)
-add_subdirectory(ceph-disk)
 add_subdirectory(ceph-volume)
-add_subdirectory(ceph-detect-init)
-
-## dencoder
-if(HAS_VTA)
-  set_source_files_properties(test/encoding/ceph_dencoder.cc
-    PROPERTIES COMPILE_FLAGS -fno-var-tracking-assignments)
-endif()
-
-set(dencoder_srcs
-  test/encoding/ceph_dencoder.cc
-  $<TARGET_OBJECTS:common_texttable_obj>
-  )
-if(${WITH_RADOSGW})
-  list(APPEND dencoder_srcs
-    rgw/rgw_dencoder.cc
-  )
-  set(DENCODER_EXTRALIBS
-    rgw_a
-    cls_rgw_client
-  )
-endif(${WITH_RADOSGW})
-if(WITH_RBD)
-  set(DENCODER_EXTRALIBS
-    ${DENCODER_EXTRALIBS}
-    cls_rbd_client
-    rbd_mirror_types
-    rbd_types
-    rbd_replay_types)
-  if(WITH_KRBD)
-    set(DENCODER_EXTRALIBS
-      ${DENCODER_EXTRALIBS}
-      krbd)
-  endif()
-endif(WITH_RBD)
-
-add_executable(ceph-dencoder ${dencoder_srcs})
-target_link_libraries(ceph-dencoder
-  global
-  os
-  osd
-  mds
-  mon
-  journal
-  ${DENCODER_EXTRALIBS}
-  cls_lock_client
-  cls_refcount_client
-  cls_log_client
-  cls_statelog_client
-  cls_version_client
-  cls_user_client
-  cls_journal_client
-  cls_timeindex_client
-  ${EXTRALIBS}
-  ${CMAKE_DL_LIBS}
-  )
-install(TARGETS ceph-dencoder DESTINATION bin)
 
 # Monitor
 add_subdirectory(mon)
@@ -878,8 +827,8 @@ set(ceph_osd_srcs
   ceph_osd.cc)
 add_executable(ceph-osd ${ceph_osd_srcs})
 add_dependencies(ceph-osd erasure_code_plugins)
-target_link_libraries(ceph-osd osd os global-static ceph-common
-  ${BLKID_LIBRARIES} ${RDMA_LIBRARIES})
+target_link_libraries(ceph-osd osd os global-static common
+  ${BLKID_LIBRARIES})
 if(WITH_FUSE)
   target_link_libraries(ceph-osd ${FUSE_LIBRARIES})
 endif()
@@ -968,7 +917,6 @@ install(PROGRAMS
 
 install(PROGRAMS
   ${CMAKE_SOURCE_DIR}/src/ceph-create-keys
-#  ${CMAKE_SOURCE_DIR}/src/ceph-disk
   DESTINATION sbin)
 
 add_subdirectory(bash_completion)
@@ -1043,7 +991,7 @@ if(WITH_RBD)
   if(WITH_KRBD)
     add_library(krbd STATIC krbd.cc
       $<TARGET_OBJECTS:parse_secret_objs>)
-    target_link_libraries(krbd ${KEYUTILS_LIBRARIES} ${UDEV_LIBRARIES})
+    target_link_libraries(krbd ${KEYUTILS_LIBRARIES})
   endif()
   add_subdirectory(librbd)
   if(WITH_FUSE)

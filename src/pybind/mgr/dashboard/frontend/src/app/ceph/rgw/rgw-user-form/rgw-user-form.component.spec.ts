@@ -1,14 +1,15 @@
 import { HttpClientTestingModule } from '@angular/common/http/testing';
-import { async, ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { RouterTestingModule } from '@angular/router/testing';
 
 import { BsModalService } from 'ngx-bootstrap/modal';
-import 'rxjs/add/observable/of';
-import { Observable } from 'rxjs/Observable';
+import { of as observableOf } from 'rxjs';
 
 import { RgwUserService } from '../../../shared/api/rgw-user.service';
 import { SharedModule } from '../../../shared/shared.module';
+import { configureTestBed } from '../../../shared/unit-test-helper';
+import { RgwUserS3Key } from '../models/rgw-user-s3-key';
 import { RgwUserFormComponent } from './rgw-user-form.component';
 
 describe('RgwUserFormComponent', () => {
@@ -18,17 +19,23 @@ describe('RgwUserFormComponent', () => {
 
   class MockRgwUserService extends RgwUserService {
     enumerate() {
-      return Observable.of(queryResult);
+      return observableOf(queryResult);
     }
   }
 
-  beforeEach(async(() => {
-    TestBed.configureTestingModule({
-      declarations: [RgwUserFormComponent],
-      imports: [HttpClientTestingModule, ReactiveFormsModule, RouterTestingModule, SharedModule],
-      providers: [BsModalService, { provide: RgwUserService, useClass: MockRgwUserService }]
-    }).compileComponents();
-  }));
+  configureTestBed({
+    declarations: [ RgwUserFormComponent ],
+    imports: [
+      HttpClientTestingModule,
+      ReactiveFormsModule,
+      RouterTestingModule,
+      SharedModule
+    ],
+    providers: [
+      BsModalService,
+      { provide: RgwUserService, useClass: MockRgwUserService }
+    ]
+  });
 
   beforeEach(() => {
     fixture = TestBed.createComponent(RgwUserFormComponent);
@@ -38,6 +45,53 @@ describe('RgwUserFormComponent', () => {
 
   it('should create', () => {
     expect(component).toBeTruthy();
+  });
+
+  describe('s3 key management', () => {
+    let rgwUserService: RgwUserService;
+
+    beforeEach(() => {
+      rgwUserService = TestBed.get(RgwUserService);
+      spyOn(rgwUserService, 'addS3Key').and.stub();
+    });
+
+    it('should not update key', () => {
+      component.setS3Key(new RgwUserS3Key(), 3);
+      expect(component.s3Keys.length).toBe(0);
+      expect(rgwUserService.addS3Key).not.toHaveBeenCalled();
+    });
+
+    it('should set key', () => {
+      const key = new RgwUserS3Key();
+      key.user = 'test1:subuser2';
+      component.setS3Key(key);
+      expect(component.s3Keys.length).toBe(1);
+      expect(component.s3Keys[0].user).toBe('test1:subuser2');
+      expect(rgwUserService.addS3Key).toHaveBeenCalledWith(
+        'test1', {
+          subuser: 'subuser2',
+          generate_key: 'false',
+          access_key: undefined,
+          secret_key: undefined
+        }
+      );
+    });
+
+    it('should set key w/o subuser', () => {
+      const key = new RgwUserS3Key();
+      key.user = 'test1';
+      component.setS3Key(key);
+      expect(component.s3Keys.length).toBe(1);
+      expect(component.s3Keys[0].user).toBe('test1');
+      expect(rgwUserService.addS3Key).toHaveBeenCalledWith(
+        'test1', {
+          subuser: '',
+          generate_key: 'false',
+          access_key: undefined,
+          secret_key: undefined
+        }
+      );
+    });
   });
 
   describe('quotaMaxSizeValidator', () => {

@@ -7,7 +7,6 @@
 #include <set>
 #include <vector>
 #include <utility>
-#include "memory.h"
 #include "buffer.h"
 
 #include "librados.h"
@@ -474,6 +473,7 @@ namespace librados
     void set_chunk(uint64_t src_offset, uint64_t src_length, const IoCtx& tgt_ioctx,
                    std::string tgt_oid, uint64_t tgt_offset, int flag = 0);
     void tier_promote();
+    void unset_manifest();
 
 
     friend class IoCtx;
@@ -1241,6 +1241,7 @@ namespace librados
 
     void locator_set_key(const std::string& key);
     void set_namespace(const std::string& nspace);
+    std::string get_namespace() const;
 
     int64_t get_id();
 

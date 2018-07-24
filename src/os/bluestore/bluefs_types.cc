@@ -141,7 +141,13 @@ void bluefs_transaction_t::encode(bufferlist& bl) const
   ENCODE_START(1, 1, bl);
   encode(uuid, bl);
   encode(seq, bl);
-  encode(op_bl, bl);
+  // not using bufferlist encode method, as it merely copies the bufferptr and not
+  // contents, meaning we're left with fragmented target bl
+  __u32 len = op_bl.length();
+  encode(len, bl);
+  for (auto& it : op_bl.buffers()) {
+    bl.append(it.c_str(),  it.length());
+  }
   encode(crc, bl);
   ENCODE_FINISH(bl);
 }
@@ -169,7 +175,7 @@ void bluefs_transaction_t::dump(Formatter *f) const
   f->dump_unsigned("crc", op_bl.crc32c(-1));
 }
 
-void bluefs_transaction_t::generate_test_instance(
+void bluefs_transaction_t::generate_test_instances(
   list<bluefs_transaction_t*>& ls)
 {
   ls.push_back(new bluefs_transaction_t);

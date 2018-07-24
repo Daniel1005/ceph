@@ -8,9 +8,10 @@ import {
   RouterStateSnapshot
 } from '@angular/router';
 
-import 'rxjs/add/observable/of';
-import 'rxjs/add/operator/catch';
-import { Observable } from 'rxjs/Observable';
+import { of as observableOf } from 'rxjs';
+import { catchError, map } from 'rxjs/operators';
+
+import { ServicesModule } from './services.module';
 
 /**
  * This service checks if a route can be activated by executing a
@@ -37,7 +38,9 @@ import { Observable } from 'rxjs/Observable';
  * },
  * ...
  */
-@Injectable()
+@Injectable({
+  providedIn: ServicesModule
+})
 export class ModuleStatusGuardService implements CanActivate, CanActivateChild {
   constructor(private http: HttpClient, private router: Router) {}
 
@@ -51,17 +54,17 @@ export class ModuleStatusGuardService implements CanActivate, CanActivateChild {
 
   private doCheck(route: ActivatedRouteSnapshot) {
     const config = route.data['moduleStatusGuardConfig'];
-    return this.http
-      .get(`/api/${config.apiPath}/status`)
-      .map((resp: any) => {
+    return this.http.get(`/api/${config.apiPath}/status`).pipe(
+      map((resp: any) => {
         if (!resp.available) {
           this.router.navigate([config.redirectTo, resp.message || '']);
         }
         return resp.available;
-      })
-      .catch(() => {
+      }),
+      catchError(() => {
         this.router.navigate([config.redirectTo]);
-        return Observable.of(false);
-      });
+        return observableOf(false);
+      })
+    );
   }
 }

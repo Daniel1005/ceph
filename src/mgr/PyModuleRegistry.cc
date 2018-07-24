@@ -46,7 +46,7 @@ void PyModuleRegistry::init()
   Py_SetProgramName(const_cast<char*>(PYTHON_EXECUTABLE));
 #endif
   // Add more modules
-  if (g_conf->get_val<bool>("daemonize")) {
+  if (g_conf().get_val<bool>("daemonize")) {
     PyImport_AppendInittab("ceph_logger", PyModule::init_ceph_logger);
   }
   PyImport_AppendInittab("ceph_module", PyModule::init_ceph_module);
@@ -257,7 +257,7 @@ void PyModuleRegistry::shutdown()
 
 std::set<std::string> PyModuleRegistry::probe_modules() const
 {
-  std::string path = g_conf->get_val<std::string>("mgr_module_path");
+  std::string path = g_conf().get_val<std::string>("mgr_module_path");
 
   DIR *dir = opendir(path.c_str());
   if (!dir) {
@@ -287,11 +287,12 @@ std::set<std::string> PyModuleRegistry::probe_modules() const
 int PyModuleRegistry::handle_command(
   std::string const &module_name,
   const cmdmap_t &cmdmap,
+  const bufferlist &inbuf,
   std::stringstream *ds,
   std::stringstream *ss)
 {
   if (active_modules) {
-    return active_modules->handle_command(module_name, cmdmap, ds, ss);
+    return active_modules->handle_command(module_name, cmdmap, inbuf, ds, ss);
   } else {
     // We do not expect to be called before active modules is up, but
     // it's straightfoward to handle this case so let's do it.
@@ -412,7 +413,7 @@ void PyModuleRegistry::upgrade_config(
     dout(1) << "Upgrading module configuration for Mimic" << dendl;
     // Upgrade luminous->mimic: migrate config-key configuration
     // into main configuration store
-    for(auto &i : old_config) {
+    for (auto &i : old_config) {
       auto last_slash = i.first.rfind('/');
       const std::string module_name = i.first.substr(4, i.first.substr(4).find('/'));
       const std::string key = i.first.substr(last_slash + 1);

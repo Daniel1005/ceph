@@ -69,7 +69,7 @@ void MgrClient::shutdown()
     m->service_name = service_name;
     session->con->send_message(m);
     utime_t timeout;
-    timeout.set_from_double(cct->_conf->get_val<double>(
+    timeout.set_from_double(cct->_conf.get_val<double>(
 			      "mgr_client_service_daemon_unregister_timeout"));
     shutdown_cond.WaitInterval(lock, timeout);
   }
@@ -129,7 +129,7 @@ void MgrClient::reconnect()
   if (last_connect_attempt != utime_t()) {
     utime_t now = ceph_clock_now();
     utime_t when = last_connect_attempt;
-    when += cct->_conf->get_val<double>("mgr_connect_retry_interval");
+    when += cct->_conf.get_val<double>("mgr_connect_retry_interval");
     if (now < when) {
       if (!connect_retry_callback) {
 	connect_retry_callback = timer.add_event_at(
@@ -149,15 +149,13 @@ void MgrClient::reconnect()
     connect_retry_callback = nullptr;
   }
 
-  ldout(cct, 4) << "Starting new session with " << map.get_active_addr()
+  ldout(cct, 4) << "Starting new session with " << map.get_active_addrs()
 		<< dendl;
-  entity_inst_t inst;
-  inst.addr = map.get_active_addr();
-  inst.name = entity_name_t::MGR(map.get_active_gid());
   last_connect_attempt = ceph_clock_now();
 
   session.reset(new MgrSessionState());
-  session->con = msgr->get_connection(inst);
+  session->con = msgr->connect_to(CEPH_ENTITY_TYPE_MGR,
+				  map.get_active_addrs());
 
   if (service_daemon) {
     daemon_dirty_status = true;
@@ -192,8 +190,8 @@ void MgrClient::_send_open()
       open->service_daemon = service_daemon;
       open->daemon_metadata = daemon_metadata;
     }
-    cct->_conf->get_config_bl(0, &open->config_bl, &last_config_bl_version);
-    cct->_conf->get_defaults_bl(&open->config_defaults_bl);
+    cct->_conf.get_config_bl(0, &open->config_bl, &last_config_bl_version);
+    cct->_conf.get_defaults_bl(&open->config_defaults_bl);
     session->con->send_message(open);
   }
 }
@@ -208,11 +206,11 @@ bool MgrClient::handle_mgr_map(MMgrMap *m)
   ldout(cct, 4) << "Got map version " << map.epoch << dendl;
   m->put();
 
-  ldout(cct, 4) << "Active mgr is now " << map.get_active_addr() << dendl;
+  ldout(cct, 4) << "Active mgr is now " << map.get_active_addrs() << dendl;
 
   // Reset session?
   if (!session ||
-      session->con->get_peer_addr() != map.get_active_addr()) {
+      session->con->get_peer_addrs() != map.get_active_addrs()) {
     reconnect();
   }
 
@@ -349,7 +347,7 @@ void MgrClient::_send_report()
 
   report->daemon_health_metrics = std::move(daemon_health_metrics);
 
-  cct->_conf->get_config_bl(last_config_bl_version, &report->config_bl,
+  cct->_conf.get_config_bl(last_config_bl_version, &report->config_bl,
 			    &last_config_bl_version);
 
   session->con->send_message(report);

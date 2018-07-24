@@ -3,29 +3,28 @@ import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 import { Router, Routes } from '@angular/router';
 import { RouterTestingModule } from '@angular/router/testing';
 
+import { configureTestBed } from '../unit-test-helper';
 import { AuthGuardService } from './auth-guard.service';
 import { AuthStorageService } from './auth-storage.service';
 
 describe('AuthGuardService', () => {
   let service: AuthGuardService;
+  let authStorageService: AuthStorageService;
 
-  @Component({selector: 'cd-login', template: ''})
-  class LoginComponent { }
+  @Component({ selector: 'cd-login', template: '' })
+  class LoginComponent {}
 
   const routes: Routes = [{ path: 'login', component: LoginComponent }];
 
-  const fakeService = {
-    isLoggedIn: () => true
-  };
+  configureTestBed({
+    imports: [RouterTestingModule.withRoutes(routes)],
+    providers: [AuthGuardService, AuthStorageService],
+    declarations: [LoginComponent]
+  });
 
   beforeEach(() => {
-    TestBed.configureTestingModule({
-      imports: [RouterTestingModule.withRoutes(routes)],
-      providers: [AuthGuardService, { provide: AuthStorageService, useValue: fakeService }],
-      declarations: [LoginComponent]
-    });
-
     service = TestBed.get(AuthGuardService);
+    authStorageService = TestBed.get(AuthStorageService);
   });
 
   it('should be created', () => {
@@ -33,6 +32,7 @@ describe('AuthGuardService', () => {
   });
 
   it('should allow the user if loggedIn', () => {
+    spyOn(authStorageService, 'isLoggedIn').and.returnValue(true);
     expect(service.canActivate(null, null)).toBe(true);
   });
 
@@ -40,9 +40,6 @@ describe('AuthGuardService', () => {
     'should prevent user if not loggedIn and redirect to login page',
     fakeAsync(() => {
       const router = TestBed.get(Router);
-      const authStorageService = TestBed.get(AuthStorageService);
-      spyOn(authStorageService, 'isLoggedIn').and.returnValue(false);
-
       expect(service.canActivate(null, null)).toBe(false);
       tick();
       expect(router.url).toBe('/login');

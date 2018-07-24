@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.12)
+cmake_minimum_required(VERSION 3.5.1)
 
 project(ceph CXX C ASM)
 set(VERSION 13.1.0)
@@ -171,12 +171,20 @@ if(WITH_STATIC_LIBSTDCXX)
     message(FATAL_ERROR "Please use GCC to enable WITH_STATIC_LIBSTDCXX")
   endif()
 endif()
+include(CheckCxxAtomic)
+if(NOT HAVE_CXX11_ATOMIC)
+  set(CMAKE_CXX_STANDARD_LIBRARIES
+    "${CMAKE_CXX_STANDARD_LIBRARIES} ${LIBATOMIC_LINK_FLAGS}")
+endif()
 
 option(WITH_RDMA "Enable RDMA in async messenger" ON)
 if(WITH_RDMA)
-  find_package(rdma REQUIRED)
-  set(HAVE_RDMA ${RDMA_FOUND})
-endif(WITH_RDMA)
+  find_package(verbs REQUIRED)
+  set(HAVE_VERBS ${VERBS_FOUND})
+  find_package(rdmacm REQUIRED)
+  set(HAVE_RDMACM ${RDMACM_FOUND})
+  set(HAVE_RDMA TRUE)
+endif()
 
 find_package(Backtrace)
 
@@ -393,7 +401,7 @@ if(WITH_RADOSGW)
     message(WARNING "disabling WITH_RADOSGW_BEAST_FRONTEND, which depends on WITH_BOOST_CONTEXT")
     set(WITH_RADOSGW_BEAST_FRONTEND OFF)
   endif()
-  find_package(liboath REQUIRED)
+  find_package(OATH REQUIRED)
 
 # https://curl.haxx.se/docs/install.html mentions the
 # configure flags for various ssl backends
@@ -581,12 +589,16 @@ if (WITH_SYSTEM_ROCKSDB)
   find_package(rocksdb 5.8 REQUIRED)
 endif()
 
+option(WITH_SEASTAR "Build seastar components")
+set(HAVE_SEASTAR ${WITH_SEASTAR})
+
 # Boost
 option(WITH_SYSTEM_BOOST "require and build with system Boost" OFF)
 
 # Boost::thread depends on Boost::atomic, so list it explicitly.
 set(BOOST_COMPONENTS
-  atomic chrono thread system regex random program_options date_time iostreams)
+  atomic chrono thread system regex random program_options date_time
+  iostreams)
 set(BOOST_HEADER_COMPONENTS container)
 
 if(WITH_MGR)
@@ -594,6 +606,9 @@ if(WITH_MGR)
 endif()
 if(WITH_BOOST_CONTEXT)
   list(APPEND BOOST_COMPONENTS context coroutine)
+endif()
+if(WITH_SEASTAR)
+  list(APPEND BOOST_COMPONENTS filesystem timer)
 endif()
 
 set(Boost_USE_MULTITHREADED ON)
@@ -604,13 +619,13 @@ if(WITH_SYSTEM_BOOST)
   else()
     set(Boost_USE_STATIC_LIBS ON)
   endif()
-  find_package(Boost 1.66 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
+  find_package(Boost 1.67 COMPONENTS ${BOOST_COMPONENTS} REQUIRED)
 else()
   set(BOOST_J 1 CACHE STRING
     "max jobs for Boost build") # override w/-DBOOST_J=<n>
   set(Boost_USE_STATIC_LIBS ON)
   include(BuildBoost)
-  build_boost(1.66
+  build_boost(1.67
     COMPONENTS ${BOOST_COMPONENTS} ${BOOST_HEADER_COMPONENTS})
   include_directories(BEFORE SYSTEM ${Boost_INCLUDE_DIRS})
 endif()

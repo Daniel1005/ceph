@@ -29,7 +29,6 @@
 #include "MDSMap.h"
 #include "SessionMap.h"
 #include "MDCache.h"
-#include "Migrator.h"
 #include "MDLog.h"
 #include "PurgeQueue.h"
 #include "osdc/Journaler.h"
@@ -221,10 +220,10 @@ class MDSRank {
 
     void handle_write_error(int err);
 
-    void handle_conf_change(const struct md_config_t *conf,
+    void handle_conf_change(const ConfigProxy& conf,
                             const std::set <std::string> &changed)
     {
-      mdcache->migrator->handle_conf_change(conf, changed, *mdsmap);
+      mdcache->handle_conf_change(conf, changed, *mdsmap);
       purge_queue.handle_conf_change(conf, changed, *mdsmap);
     }
 
@@ -426,14 +425,14 @@ class MDSRank {
 
     void dump_status(Formatter *f) const;
 
-    void hit_export_target(utime_t now, mds_rank_t rank, double amount=-1.0);
+    void hit_export_target(mds_rank_t rank, double amount=-1.0);
     bool is_export_target(mds_rank_t rank) {
       const set<mds_rank_t>& map_targets = mdsmap->get_mds_info(get_nodeid()).export_targets;
       return map_targets.count(rank);
     }
 
     bool evict_client(int64_t session_id, bool wait, bool blacklist,
-                      std::stringstream& ss, Context *on_killed=nullptr);
+                      std::ostream& ss, Context *on_killed=nullptr);
 
     void mark_base_recursively_scrubbed(inodeno_t ino);
 
@@ -458,12 +457,13 @@ class MDSRank {
         std::ostream &ss,
         Formatter *f);
     int _command_export_dir(std::string_view path, mds_rank_t dest);
-    int _command_flush_journal(std::stringstream *ss);
+    int _command_flush_journal(std::ostream& ss);
     CDir *_command_dirfrag_get(
         const cmdmap_t &cmdmap,
         std::ostream &ss);
     void command_openfiles_ls(Formatter *f);
     void command_dump_tree(const cmdmap_t &cmdmap, std::ostream &ss, Formatter *f);
+    void command_dump_inode(Formatter *f, const cmdmap_t &cmdmap, std::ostream &ss);
 
   protected:
     Messenger    *messenger;
@@ -532,7 +532,7 @@ class MDSRank {
     // <<<
 
     /* Update MDSMap export_targets for this rank. Called on ::tick(). */
-    void update_targets(utime_t now);
+    void update_targets();
 
     friend class C_MDS_MonCommand;
     void _mon_command_finish(int r, std::string_view cmd, std::string_view outs);

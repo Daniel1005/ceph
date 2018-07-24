@@ -2,14 +2,17 @@ import { Injectable } from '@angular/core';
 
 import * as _ from 'lodash';
 import { ToastsManager } from 'ng2-toastr';
-import { BehaviorSubject } from 'rxjs/BehaviorSubject';
+import { BehaviorSubject } from 'rxjs';
 
 import { NotificationType } from '../enum/notification-type.enum';
 import { CdNotification } from '../models/cd-notification';
 import { FinishedTask } from '../models/finished-task';
+import { ServicesModule } from './services.module';
 import { TaskManagerMessageService } from './task-manager-message.service';
 
-@Injectable()
+@Injectable({
+  providedIn: ServicesModule
+})
 export class NotificationService {
   // Observable sources
   private dataSource = new BehaviorSubject<CdNotification[]>([]);

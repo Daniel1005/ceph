@@ -46,6 +46,7 @@
 %endif
 %endif
 %endif
+%bcond_with seastar
 %if 0%{?suse_version} >= 1500
 %bcond_with python2
 %else
@@ -120,7 +121,11 @@ BuildRequires:	selinux-policy-devel
 %endif
 BuildRequires:	bc
 BuildRequires:	gperf
-BuildRequires:  cmake
+%if 0%{?rhel} == 7
+BuildRequires:  cmake3 > 3.5
+%else
+BuildRequires:  cmake > 3.5
+%endif
 BuildRequires:	cryptsetup
 BuildRequires:	fuse-devel
 %if 0%{?rhel} == 7
@@ -151,13 +156,8 @@ BuildRequires:	pkgconfig
 BuildRequires:  procps
 BuildRequires:	python%{_python_buildid}
 BuildRequires:	python%{_python_buildid}-devel
-BuildRequires:	python%{_python_buildid}-nose
-BuildRequires:	python%{_python_buildid}-requests
-BuildRequires:	python%{_python_buildid}-virtualenv
 BuildRequires:	snappy-devel
-%if 0%{with make_check}
-BuildRequires:	socat
-%endif
+BuildRequires:	sudo
 BuildRequires:	udev
 BuildRequires:	util-linux
 BuildRequires:	valgrind-devel
@@ -166,7 +166,26 @@ BuildRequires:	xfsprogs
 BuildRequires:	xfsprogs-devel
 BuildRequires:	xmlstarlet
 BuildRequires:	yasm
-
+%if 0%{with make_check}
+BuildRequires:	python%{_python_buildid}-coverage
+BuildRequires:	python%{_python_buildid}-nose
+BuildRequires:	python%{_python_buildid}-pecan
+BuildRequires:	python%{_python_buildid}-requests
+BuildRequires:	python%{_python_buildid}-six
+BuildRequires:	python%{_python_buildid}-tox
+BuildRequires:	python%{_python_buildid}-virtualenv
+BuildRequires:	socat
+%endif
+%if 0%{with seastar}
+BuildRequires:  gnutls-devel
+BuildRequires:  hwloc-devel
+BuildRequires:  libpciaccess-devel
+BuildRequires:  lksctp-tools-devel
+BuildRequires:  protobuf-devel
+BuildRequires:  ragel
+BuildRequires:  systemtap-sdt-devel
+BuildRequires:  yaml-cpp-devel
+%endif
 #################################################################################
 # distro-conditional dependencies
 #################################################################################
@@ -199,6 +218,7 @@ BuildRequires:	btrfs-progs
 BuildRequires:	nss-devel
 BuildRequires:	keyutils-libs-devel
 BuildRequires:	libibverbs-devel
+BuildRequires:  librdmacm-devel
 BuildRequires:  openldap-devel
 BuildRequires:  openssl-devel
 BuildRequires:  CUnit-devel
@@ -223,10 +243,7 @@ BuildRequires:	python3-Cython
 %if 0%{?fedora} || 0%{?rhel}
 BuildRequires:	python%{_python_buildid}-cherrypy
 BuildRequires:	python%{_python_buildid}-routes
-BuildRequires:	python%{_python_buildid}-pecan
 BuildRequires:	python%{_python_buildid}-werkzeug
-BuildRequires:	python%{_python_buildid}-tox
-BuildRequires:	python%{_python_buildid}-coverage
 %if 0%{?fedora}
 BuildRequires:	python%{_python_buildid}-bcrypt
 %endif
@@ -238,11 +255,8 @@ BuildRequires:	py-bcrypt
 BuildRequires:	python%{_python_buildid}-CherryPy
 BuildRequires:	python%{_python_buildid}-Routes
 BuildRequires:	python%{_python_buildid}-Werkzeug
-BuildRequires:	python%{_python_buildid}-pecan
 BuildRequires:	python%{_python_buildid}-numpy-devel
 BuildRequires:	python%{_python_buildid}-bcrypt
-BuildRequires:	python%{_python_buildid}-tox
-BuildRequires:	python%{_python_buildid}-coverage
 %endif
 %endif
 # lttng and babeltrace for rbd-replay-prep
@@ -266,6 +280,17 @@ BuildRequires:	expat-devel
 %if 0%{?fedora} || 0%{?rhel}
 BuildRequires:  redhat-rpm-config
 %endif
+%if 0%{with seastar}
+%if 0%{?fedora} || 0%{?rhel}
+BuildRequires:  cryptopp-devel
+BuildRequires:  numactl-devel
+BuildRequires:  protobuf-compiler
+%endif
+%if 0%{?suse_version}
+BuildRequires:  libcryptopp-devel
+BuildRequires:  libnuma-devel
+%endif
+%endif
 
 %description
 Ceph is a massively scalable, open-source, distributed storage system that runs
@@ -280,6 +305,7 @@ Summary:       Ceph Base Package
 %if 0%{?suse_version}
 Group:         System/Filesystems
 %endif
+Provides:      ceph-test:/usr/bin/ceph-kvstore-tool
 Requires:      ceph-common = %{_epoch_prefix}%{version}-%{release}
 Requires:      librbd1 = %{_epoch_prefix}%{version}-%{release}
 Requires:      librados2 = %{_epoch_prefix}%{version}-%{release}
@@ -354,6 +380,7 @@ Summary:	Ceph Monitor Daemon
 %if 0%{?suse_version}
 Group:		System/Filesystems
 %endif
+Provides:	ceph-test:/usr/bin/ceph-monstore-tool
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 %description mon
 ceph-mon is the cluster monitor daemon for the Ceph distributed file
@@ -367,11 +394,12 @@ Summary:        Ceph Manager Daemon
 Group:          System/Filesystems
 %endif
 Requires:       ceph-base = %{_epoch_prefix}%{version}-%{release}
+Requires:       python%{_python_buildid}-pecan
+Requires:       python%{_python_buildid}-six
 %if 0%{?fedora} || 0%{?rhel}
 Requires:       python%{_python_buildid}-cherrypy
-Requires:       python%{_python_buildid}-routes
 Requires:       python%{_python_buildid}-jinja2
-Requires:       python%{_python_buildid}-pecan
+Requires:       python%{_python_buildid}-routes
 Requires:       python%{_python_buildid}-werkzeug
 Requires:       pyOpenSSL%{_python_buildid}
 %if 0%{?fedora}
@@ -386,7 +414,6 @@ Requires:       python%{_python_buildid}-CherryPy
 Requires:       python%{_python_buildid}-Routes
 Requires:       python%{_python_buildid}-Jinja2
 Requires:       python%{_python_buildid}-Werkzeug
-Requires:       python%{_python_buildid}-pecan
 Requires:       python%{_python_buildid}-pyOpenSSL
 Requires:       python%{_python_buildid}-bcrypt
 Recommends:     python%{_python_buildid}-influxdb
@@ -476,8 +503,10 @@ Summary:	Ceph Object Storage Daemon
 %if 0%{?suse_version}
 Group:		System/Filesystems
 %endif
+Provides:	ceph-test:/usr/bin/ceph-osdomap-tool
 Requires:	ceph-base = %{_epoch_prefix}%{version}-%{release}
 Requires:	lvm2
+Requires:	sudo
 %description osd
 ceph-osd is the object storage daemon for the Ceph distributed file
 system.  It is responsible for storing objects on a local file system
@@ -891,7 +920,12 @@ env | sort
 
 mkdir build
 cd build
-cmake .. \
+%if 0%{?rhel} == 7
+CMAKE=cmake3
+%else
+CMAKE=cmake
+%endif
+${CMAKE} .. \
     -DCMAKE_INSTALL_PREFIX=%{_prefix} \
     -DCMAKE_INSTALL_LIBDIR=%{_libdir} \
     -DCMAKE_INSTALL_LIBEXECDIR=%{_libexecdir} \
@@ -981,8 +1015,9 @@ ln -sf %{_sbindir}/mount.ceph %{buildroot}/sbin/mount.ceph
 
 # udev rules
 install -m 0644 -D udev/50-rbd.rules %{buildroot}%{_udevrulesdir}/50-rbd.rules
-install -m 0644 -D udev/60-ceph-by-parttypeuuid.rules %{buildroot}%{_udevrulesdir}/60-ceph-by-parttypeuuid.rules
-install -m 0644 -D udev/95-ceph-osd.rules %{buildroot}%{_udevrulesdir}/95-ceph-osd.rules
+
+# sudoers.d
+install -m 0600 -D sudoers.d/ceph-osd-smartctl %{buildroot}%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
 
 #set up placeholder directories
 mkdir -p %{buildroot}%{_sysconfdir}/ceph
@@ -999,6 +1034,7 @@ mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-mds
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rgw
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-mgr
 mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/bootstrap-rbd
+mkdir -p %{buildroot}%{_localstatedir}/lib/ceph/crash
 
 %if 0%{?suse_version}
 # create __pycache__ directories and their contents
@@ -1019,10 +1055,8 @@ rm -rf %{buildroot}
 %{_bindir}/osdmaptool
 %{_bindir}/ceph-kvstore-tool
 %{_bindir}/ceph-run
-%{_bindir}/ceph-detect-init
 %{_libexecdir}/systemd/system-preset/50-ceph.preset
 %{_sbindir}/ceph-create-keys
-%{_sbindir}/ceph-disk
 %dir %{_libexecdir}/ceph
 %{_libexecdir}/ceph/ceph_common.sh
 %dir %{_libdir}/rados-classes
@@ -1049,15 +1083,7 @@ rm -rf %{buildroot}
 %config %{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-mon
 %config %{_sysconfdir}/sysconfig/SuSEfirewall2.d/services/ceph-osd-mds
 %endif
-%{_unitdir}/ceph-disk@.service
 %{_unitdir}/ceph.target
-%if 0%{with python2}
-%{python_sitelib}/ceph_detect_init*
-%{python_sitelib}/ceph_disk*
-%else
-%{python3_sitelib}/ceph_detect_init*
-%{python3_sitelib}/ceph_disk*
-%endif
 %if 0%{with python2}
 %dir %{python_sitelib}/ceph_volume
 %{python_sitelib}/ceph_volume/*
@@ -1068,9 +1094,7 @@ rm -rf %{buildroot}
 %{python3_sitelib}/ceph_volume-*
 %endif
 %{_mandir}/man8/ceph-deploy.8*
-%{_mandir}/man8/ceph-detect-init.8*
 %{_mandir}/man8/ceph-create-keys.8*
-%{_mandir}/man8/ceph-disk.8*
 %{_mandir}/man8/ceph-run.8*
 %{_mandir}/man8/crushtool.8*
 %{_mandir}/man8/osdmaptool.8*
@@ -1089,11 +1113,11 @@ rm -rf %{buildroot}
 %if 0%{?suse_version}
 %fillup_only
 if [ $1 -eq 1 ] ; then
-/usr/bin/systemctl preset ceph-disk@\*.service ceph.target >/dev/null 2>&1 || :
+/usr/bin/systemctl preset ceph.target >/dev/null 2>&1 || :
 fi
 %endif
 %if 0%{?fedora} || 0%{?rhel}
-%systemd_post ceph-disk@\*.service ceph.target
+%systemd_post ceph.target
 %endif
 if [ $1 -eq 1 ] ; then
 /usr/bin/systemctl start ceph.target >/dev/null 2>&1 || :
@@ -1101,10 +1125,10 @@ fi
 
 %preun base
 %if 0%{?suse_version}
-%service_del_preun ceph-disk@\*.service ceph.target
+%service_del_preun ceph.target
 %endif
 %if 0%{?fedora} || 0%{?rhel}
-%systemd_preun ceph-disk@\*.service ceph.target
+%systemd_preun ceph.target
 %endif
 
 %postun base
@@ -1112,10 +1136,10 @@ fi
 test -n "$FIRST_ARG" || FIRST_ARG=$1
 %if 0%{?suse_version}
 DISABLE_RESTART_ON_UPDATE="yes"
-%service_del_postun ceph-disk@\*.service ceph.target
+%service_del_postun ceph.target
 %endif
 %if 0%{?fedora} || 0%{?rhel}
-%systemd_postun ceph-disk@\*.service ceph.target
+%systemd_postun ceph.target
 %endif
 if [ $FIRST_ARG -ge 1 ] ; then
   # Restart on upgrade, but only if "CEPH_AUTO_RESTART_ON_UPGRADE" is set to
@@ -1123,9 +1147,6 @@ if [ $FIRST_ARG -ge 1 ] ; then
   SYSCONF_CEPH=%{_sysconfdir}/sysconfig/ceph
   if [ -f $SYSCONF_CEPH -a -r $SYSCONF_CEPH ] ; then
     source $SYSCONF_CEPH
-  fi
-  if [ "X$CEPH_AUTO_RESTART_ON_UPGRADE" = "Xyes" ] ; then
-    /usr/bin/systemctl try-restart ceph-disk@\*.service > /dev/null 2>&1 || :
   fi
 fi
 
@@ -1505,9 +1526,6 @@ fi
 %{_libexecdir}/ceph/ceph-osd-prestart.sh
 %{_sbindir}/ceph-volume
 %{_sbindir}/ceph-volume-systemd
-%dir %{_udevrulesdir}
-%{_udevrulesdir}/60-ceph-by-parttypeuuid.rules
-%{_udevrulesdir}/95-ceph-osd.rules
 %{_mandir}/man8/ceph-clsinfo.8*
 %{_mandir}/man8/ceph-osd.8*
 %{_mandir}/man8/ceph-bluestore-tool.8*
@@ -1521,6 +1539,7 @@ fi
 %{_unitdir}/ceph-volume@.service
 %attr(750,ceph,ceph) %dir %{_localstatedir}/lib/ceph/osd
 %config(noreplace) %{_sysctldir}/90-ceph-osd.conf
+%{_sysconfdir}/sudoers.d/ceph-osd-smartctl
 
 %post osd
 %if 0%{?suse_version}
@@ -1602,7 +1621,6 @@ fi
 %{_includedir}/rados/crc32c.h
 %{_includedir}/rados/rados_types.h
 %{_includedir}/rados/rados_types.hpp
-%{_includedir}/rados/memory.h
 %{_libdir}/librados.so
 %if %{with lttng}
 %{_libdir}/librados_tp.so
@@ -1810,13 +1828,8 @@ if test $STATUS -eq 0; then
     /usr/bin/systemctl stop ceph.target > /dev/null 2>&1
 fi
 
-# Relabel the files
-# Use ceph-disk fix for first package install and fixfiles otherwise
-if [ "$1" = "1" ]; then
-    /usr/sbin/ceph-disk fix --selinux
-else
-    /usr/sbin/fixfiles -C ${FILE_CONTEXT}.pre restore 2> /dev/null
-fi
+# Relabel the files fix for first package install
+/usr/sbin/fixfiles -C ${FILE_CONTEXT}.pre restore 2> /dev/null
 
 rm -f ${FILE_CONTEXT}.pre
 # The fixfiles command won't fix label for /var/run/ceph

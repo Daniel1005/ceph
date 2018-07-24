@@ -39,13 +39,14 @@
 #include "Session.h"
 #include "MonCommand.h"
 
+
+#include "common/config_obs.h"
 #include "common/LogClient.h"
 #include "auth/cephx/CephxKeyServer.h"
 #include "auth/AuthMethodList.h"
 #include "auth/KeyRing.h"
 #include "messages/MMonCommand.h"
 #include "mon/MonitorDBStore.h"
-#include "include/memory.h"
 #include "mgr/MgrClient.h"
 
 #include "mon/MonOpRequest.h"
@@ -285,7 +286,7 @@ private:
     ScrubState() : finished(false) { }
     virtual ~ScrubState() { }
   };
-  ceph::shared_ptr<ScrubState> scrub_state; ///< keeps track of current scrub
+  std::shared_ptr<ScrubState> scrub_state; ///< keeps track of current scrub
 
   /**
    * @defgroup Monitor_h_sync Synchronization
@@ -532,7 +533,7 @@ private:
     double abs_skew = std::fabs(skew_bound);
     if (abs)
       *abs = abs_skew;
-    return (abs_skew > g_conf->mon_clock_drift_allowed);
+    return (abs_skew > g_conf()->mon_clock_drift_allowed);
   }
 
   /**
@@ -607,42 +608,42 @@ public:
   /**
    * Vector holding the Services serviced by this Monitor.
    */
-  vector<PaxosService*> paxos_service;
+  vector<std::unique_ptr<PaxosService>> paxos_service;
 
   class MDSMonitor *mdsmon() {
-    return (class MDSMonitor *)paxos_service[PAXOS_MDSMAP];
+    return (class MDSMonitor *)paxos_service[PAXOS_MDSMAP].get();
   }
 
   class MonmapMonitor *monmon() {
-    return (class MonmapMonitor *)paxos_service[PAXOS_MONMAP];
+    return (class MonmapMonitor *)paxos_service[PAXOS_MONMAP].get();
   }
 
   class OSDMonitor *osdmon() {
-    return (class OSDMonitor *)paxos_service[PAXOS_OSDMAP];
+    return (class OSDMonitor *)paxos_service[PAXOS_OSDMAP].get();
   }
 
   class AuthMonitor *authmon() {
-    return (class AuthMonitor *)paxos_service[PAXOS_AUTH];
+    return (class AuthMonitor *)paxos_service[PAXOS_AUTH].get();
   }
 
   class LogMonitor *logmon() {
-    return (class LogMonitor*) paxos_service[PAXOS_LOG];
+    return (class LogMonitor*) paxos_service[PAXOS_LOG].get();
   }
 
   class MgrMonitor *mgrmon() {
-    return (class MgrMonitor*) paxos_service[PAXOS_MGR];
+    return (class MgrMonitor*) paxos_service[PAXOS_MGR].get();
   }
 
   class MgrStatMonitor *mgrstatmon() {
-    return (class MgrStatMonitor*) paxos_service[PAXOS_MGRSTAT];
+    return (class MgrStatMonitor*) paxos_service[PAXOS_MGRSTAT].get();
   }
 
   class HealthMonitor *healthmon() {
-    return (class HealthMonitor*) paxos_service[PAXOS_HEALTH];
+    return (class HealthMonitor*) paxos_service[PAXOS_HEALTH].get();
   }
 
   class ConfigMonitor *configmon() {
-    return (class ConfigMonitor*) paxos_service[PAXOS_CONFIG];
+    return (class ConfigMonitor*) paxos_service[PAXOS_CONFIG].get();
   }
 
   friend class Paxos;
@@ -801,16 +802,12 @@ public:
   
   void forward_request_leader(MonOpRequestRef op);
   void handle_forward(MonOpRequestRef op);
-  void try_send_message(Message *m, const entity_inst_t& to);
   void send_reply(MonOpRequestRef op, Message *reply);
   void no_reply(MonOpRequestRef op);
   void resend_routed_requests();
   void remove_session(MonSession *s);
   void remove_all_sessions();
   void waitlist_or_zap_client(MonOpRequestRef op);
-
-  void send_command(const entity_inst_t& inst,
-		    const vector<string>& com);
 
   void send_mon_message(Message *m, int rank);
 
@@ -837,7 +834,7 @@ public:
 
           // if client drops we may not have a session to draw information from.
           if (s) {
-            ss << "from='" << s->inst << "' "
+            ss << "from='" << s->name << " " << s->addrs << "' "
               << "entity='" << s->entity_name << "' ";
           } else {
             ss << "session dropped for command ";
@@ -885,11 +882,12 @@ public:
   }
   void dispatch_op(MonOpRequestRef op);
   //mon_caps is used for un-connected messages from monitors
-  MonCap * mon_caps;
+  MonCap mon_caps;
   bool ms_get_authorizer(int dest_type, AuthAuthorizer **authorizer, bool force_new) override;
   bool ms_verify_authorizer(Connection *con, int peer_type,
 			    int protocol, bufferlist& authorizer_data, bufferlist& authorizer_reply,
-			    bool& isvalid, CryptoKey& session_key) override;
+			    bool& isvalid, CryptoKey& session_key,
+			    std::unique_ptr<AuthAuthorizerChallenge> *challenge) override;
   bool ms_handle_reset(Connection *con) override;
   void ms_handle_remote_reset(Connection *con) override {}
   bool ms_handle_refused(Connection *con) override;
@@ -923,7 +921,7 @@ public:
 
   // config observer
   const char** get_tracked_conf_keys() const override;
-  void handle_conf_change(const struct md_config_t *conf,
+  void handle_conf_change(const ConfigProxy& conf,
                           const std::set<std::string> &changed) override;
 
   void update_log_clients();

@@ -538,6 +538,11 @@ public:
   // -- cache infrastructure --
 private:
   mempool::mds_co::compact_map<frag_t,CDir*> dirfrags; // cached dir fragments under this Inode
+
+  //for the purpose of quickly determining whether there's a subtree root or exporting dir
+  int num_subtree_roots = 0;
+  int num_exporting_dirs = 0;
+
   int stickydir_ref = 0;
   scrub_info_t *scrub_infop = nullptr;
 
@@ -546,7 +551,7 @@ public:
   CDir* get_dirfrag(frag_t fg) {
     auto pi = dirfrags.find(fg);
     if (pi != dirfrags.end()) {
-      //assert(g_conf->debug_mds < 2 || dirfragtree.is_leaf(fg)); // performance hack FIXME
+      //assert(g_conf()->debug_mds < 2 || dirfragtree.is_leaf(fg)); // performance hack FIXME
       return pi->second;
     } 
     return NULL;
@@ -581,8 +586,8 @@ public:
   // -- distributed state --
 protected:
   // file capabilities
-  using cap_map = mempool::mds_co::map<client_t, Capability*>;
-  cap_map client_caps;         // client -> caps
+  using mempool_cap_map = mempool::mds_co::map<client_t, Capability>;
+  mempool_cap_map client_caps;         // client -> caps
   mempool::mds_co::compact_map<int32_t, int32_t>      mds_caps_wanted;     // [auth] mds -> caps wanted
   int replica_caps_wanted = 0; // [replica] what i've requested from auth
   int num_caps_wanted = 0;
@@ -681,30 +686,7 @@ public:
 
   // ---------------------------
   CInode() = delete;
-  CInode(MDCache *c, bool auth=true, snapid_t f=2, snapid_t l=CEPH_NOSNAP) : 
-    mdcache(c),
-    first(f), last(l),
-    item_dirty(this),
-    item_caps(this),
-    item_open_file(this),
-    item_dirty_parent(this),
-    item_dirty_dirfrag_dir(this), 
-    item_dirty_dirfrag_nest(this), 
-    item_dirty_dirfrag_dirfragtree(this), 
-    pop(ceph_clock_now()),
-    versionlock(this, &versionlock_type),
-    authlock(this, &authlock_type),
-    linklock(this, &linklock_type),
-    dirfragtreelock(this, &dirfragtreelock_type),
-    filelock(this, &filelock_type),
-    xattrlock(this, &xattrlock_type),
-    snaplock(this, &snaplock_type),
-    nestlock(this, &nestlock_type),
-    flocklock(this, &flocklock_type),
-    policylock(this, &policylock_type)
-  {
-    if (auth) state_set(STATE_AUTH);
-  }
+  CInode(MDCache *c, bool auth=true, snapid_t f=2, snapid_t l=CEPH_NOSNAP);
   ~CInode() override {
     close_dirfrags();
     close_snaprealm();
@@ -712,6 +694,8 @@ public:
     assert(num_projected_xattrs == 0);
     assert(num_projected_srnodes == 0);
     assert(num_caps_wanted == 0);
+    assert(num_subtree_roots == 0);
+    assert(num_exporting_dirs == 0);
   }
   
 
@@ -867,7 +851,7 @@ public:
 
   // -- import/export --
   void encode_export(bufferlist& bl);
-  void finish_export(utime_t now);
+  void finish_export();
   void abort_export() {
     put(PIN_TEMPEXPORTING);
     assert(state_test(STATE_EXPORTINGCAPS));
@@ -975,7 +959,7 @@ public:
   int count_nonstale_caps() {
     int n = 0;
     for (const auto &p : client_caps) {
-      if (!p.second->is_stale())
+      if (!p.second.is_stale())
 	n++;
     }
     return n;
@@ -983,7 +967,7 @@ public:
   bool multiple_nonstale_caps() {
     int n = 0;
     for (const auto &p : client_caps) {
-      if (!p.second->is_stale()) {
+      if (!p.second.is_stale()) {
 	if (n)
 	  return true;
 	n++;
@@ -999,17 +983,17 @@ public:
   void set_mds_caps_wanted(mempool::mds_co::compact_map<int32_t,int32_t>& m);
   void set_mds_caps_wanted(mds_rank_t mds, int32_t wanted);
 
-  const cap_map& get_client_caps() const { return client_caps; }
+  const mempool_cap_map& get_client_caps() const { return client_caps; }
   Capability *get_client_cap(client_t client) {
     auto client_caps_entry = client_caps.find(client);
     if (client_caps_entry != client_caps.end())
-      return client_caps_entry->second;
+      return &client_caps_entry->second;
     return 0;
   }
   int get_client_cap_pending(client_t client) const {
     auto client_caps_entry = client_caps.find(client);
     if (client_caps_entry != client_caps.end()) {
-      return client_caps_entry->second->pending();
+      return client_caps_entry->second.pending();
     } else {
       return 0;
     }
@@ -1099,7 +1083,7 @@ public:
 public:
   void set_primary_parent(CDentry *p) {
     assert(parent == 0 ||
-	   g_conf->get_val<bool>("mds_hack_allow_loading_invalid_metadata"));
+	   g_conf().get_val<bool>("mds_hack_allow_loading_invalid_metadata"));
     parent = p;
   }
   void remove_primary_parent(CDentry *dn) {

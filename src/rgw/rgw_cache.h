@@ -58,7 +58,7 @@ struct ObjectCacheInfo {
   map<string, bufferlist> rm_xattrs;
   ObjectMetaInfo meta;
   obj_version version = {};
-  ceph::coarse_mono_time time_added = ceph::coarse_mono_clock::now();
+  ceph::coarse_mono_time time_added;
 
   ObjectCacheInfo() = default;
 
@@ -183,7 +183,7 @@ public:
   void set_ctx(CephContext *_cct) {
     cct = _cct;
     lru_window = cct->_conf->rgw_cache_lru_size / 2;
-    expiry = std::chrono::seconds(cct->_conf->get_val<uint64_t>(
+    expiry = std::chrono::seconds(cct->_conf.get_val<uint64_t>(
 						"rgw_cache_expiry_interval"));
   }
   bool chain_cache_entry(std::initializer_list<rgw_cache_entry_info*> cache_info_entries,

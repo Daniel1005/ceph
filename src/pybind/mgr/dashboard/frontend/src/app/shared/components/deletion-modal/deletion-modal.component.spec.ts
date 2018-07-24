@@ -1,12 +1,11 @@
 import { Component, NgModule, NO_ERRORS_SCHEMA, TemplateRef, ViewChild } from '@angular/core';
-import { async, ComponentFixture, fakeAsync, TestBed, tick } from '@angular/core/testing';
-import { ReactiveFormsModule } from '@angular/forms';
+import { ComponentFixture, fakeAsync, TestBed, tick } from '@angular/core/testing';
+import { NgForm, ReactiveFormsModule } from '@angular/forms';
 
 import { BsModalRef, BsModalService, ModalModule } from 'ngx-bootstrap';
-import { Observable } from 'rxjs/Observable';
-import { Subscriber } from 'rxjs/Subscriber';
+import { Observable, Subscriber, timer as observableTimer } from 'rxjs';
 
-import { ModalComponent } from '../modal/modal.component';
+import { configureTestBed } from '../../unit-test-helper';
 import { DeletionModalComponent } from './deletion-modal.component';
 
 @NgModule({
@@ -76,7 +75,7 @@ class MockComponent {
   fakeDelete() {
     return (): Observable<any> => {
       return new Observable((observer: Subscriber<any>) => {
-        Observable.timer(100).subscribe(() => {
+        observableTimer(100).subscribe(() => {
           observer.next(this.finish());
           observer.complete();
         });
@@ -85,7 +84,7 @@ class MockComponent {
   }
 
   fakeDeleteController() {
-    Observable.timer(100).subscribe(() => {
+    observableTimer(100).subscribe(() => {
       this.finish();
       this.ctrlRef.hide();
     });
@@ -98,13 +97,11 @@ describe('DeletionModalComponent', () => {
   let mockFixture: ComponentFixture<MockComponent>;
   let fixture: ComponentFixture<DeletionModalComponent>;
 
-  beforeEach(async(() => {
-    TestBed.configureTestingModule({
-      declarations: [MockComponent, DeletionModalComponent],
-      schemas: [NO_ERRORS_SCHEMA],
-      imports: [ModalModule.forRoot(), ReactiveFormsModule, MockModule]
-    }).compileComponents();
-  }));
+  configureTestBed({
+    declarations: [MockComponent, DeletionModalComponent],
+    schemas: [NO_ERRORS_SCHEMA],
+    imports: [ModalModule.forRoot(), ReactiveFormsModule, MockModule]
+  });
 
   beforeEach(() => {
     mockFixture = TestBed.createComponent(MockComponent);
@@ -261,9 +258,11 @@ describe('DeletionModalComponent', () => {
       expect(component.modalRef.hide).toHaveBeenCalled();
     });
 
-    describe('invalid control', () => {
-      const testInvalidControl = (submitted: boolean, error: string, expected: boolean) => {
-        expect(component.invalidControl(submitted, error)).toBe(expected);
+    describe('validate confirmation', () => {
+      const testValidation = (submitted: boolean, error: string, expected: boolean) => {
+        expect(
+          component.deletionForm.showError('confirmation', <NgForm>{ submitted: submitted }, error)
+        ).toBe(expected);
       };
 
       beforeEach(() => {
@@ -271,22 +270,21 @@ describe('DeletionModalComponent', () => {
       });
 
       it('should test empty values', () => {
-        expect(component.invalidControl).toBeTruthy();
         component.deletionForm.reset();
-        testInvalidControl(false, undefined, false);
-        testInvalidControl(true, 'required', true);
+        testValidation(false, undefined, false);
+        testValidation(true, 'required', true);
         component.deletionForm.reset();
         changeValue('let-me-pass');
         changeValue('');
-        testInvalidControl(true, 'required', true);
+        testValidation(true, 'required', true);
       });
 
       it('should test pattern', () => {
         changeValue('let-me-pass');
-        testInvalidControl(false, 'pattern', true);
+        testValidation(false, 'pattern', true);
         changeValue('ctrl-test');
-        testInvalidControl(false, undefined, false);
-        testInvalidControl(true, undefined, false);
+        testValidation(false, undefined, false);
+        testValidation(true, undefined, false);
       });
     });
 

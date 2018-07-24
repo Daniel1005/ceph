@@ -1,9 +1,9 @@
 import { HttpClient } from '@angular/common/http';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 
-import 'rxjs/add/observable/of';
-import { Observable } from 'rxjs/Observable';
+import { of as observableOf } from 'rxjs';
 
+import { configureTestBed } from '../unit-test-helper';
 import { AuthStorageService } from './auth-storage.service';
 import { SummaryService } from './summary.service';
 
@@ -13,7 +13,7 @@ describe('SummaryService', () => {
 
   const httpClientSpy = {
     get: () =>
-      Observable.of({
+      observableOf({
         executing_tasks: [],
         health_status: 'HEALTH_OK',
         mgr_id: 'x',
@@ -25,15 +25,15 @@ describe('SummaryService', () => {
       })
   };
 
-  beforeEach(() => {
-    TestBed.configureTestingModule({
-      providers: [
-        SummaryService,
-        AuthStorageService,
-        { provide: HttpClient, useValue: httpClientSpy }
-      ]
-    });
+  configureTestBed({
+    providers: [
+      SummaryService,
+      AuthStorageService,
+      { provide: HttpClient, useValue: httpClientSpy }
+    ]
+  });
 
+  beforeEach(() => {
     summaryService = TestBed.get(SummaryService);
     authStorageService = TestBed.get(AuthStorageService);
   });
@@ -42,18 +42,21 @@ describe('SummaryService', () => {
     expect(summaryService).toBeTruthy();
   });
 
-  it('should call refresh', fakeAsync(() => {
-    authStorageService.set('foobar');
-    let result = false;
-    summaryService.refresh();
-    summaryService.summaryData$.subscribe((res) => {
-      result = true;
-    });
-    tick(5000);
-    spyOn(summaryService, 'refresh').and.callFake(() => true);
-    tick(5000);
-    expect(result).toEqual(true);
-  }));
+  it(
+    'should call refresh',
+    fakeAsync(() => {
+      authStorageService.set('foobar');
+      let result = false;
+      summaryService.refresh();
+      summaryService.summaryData$.subscribe((res) => {
+        result = true;
+      });
+      tick(5000);
+      spyOn(summaryService, 'refresh').and.callFake(() => true);
+      tick(5000);
+      expect(result).toEqual(true);
+    })
+  );
 
   it('should get summary', () => {
     expect(summaryService.get()).toEqual(jasmine.any(Object));

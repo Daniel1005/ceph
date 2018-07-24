@@ -42,6 +42,7 @@ struct MockManagedLock {
   MOCK_METHOD1(shut_down, void(Context *));
   MOCK_METHOD1(try_acquire_lock, void(Context *));
   MOCK_METHOD1(release_lock, void(Context *));
+  MOCK_METHOD0(reacquire_lock, void());
   MOCK_METHOD3(break_lock, void(const managed_lock::Locker &, bool, Context *));
   MOCK_METHOD2(get_locker, void(managed_lock::Locker *, Context *));
 
@@ -124,6 +125,10 @@ struct ManagedLock<MockTestImageCtx> {
       });
 
     m_work_queue->queue(pre_release_ctx, 0);
+  }
+
+  void reacquire_lock() {
+    MockManagedLock::get_instance().reacquire_lock();
   }
 
   void get_locker(managed_lock::Locker *locker, Context *on_finish) {
@@ -621,7 +626,7 @@ TEST_F(TestMockLeaderWatcher, Break) {
   EXPECT_EQ(0, _rados->conf_set("rbd_mirror_leader_max_missed_heartbeats",
                                 "1"));
   CephContext *cct = reinterpret_cast<CephContext *>(m_local_io_ctx.cct());
-  int max_acquire_attempts = cct->_conf->get_val<int64_t>(
+  int max_acquire_attempts = cct->_conf.get_val<int64_t>(
     "rbd_mirror_leader_max_acquire_attempts_before_break");
 
   MockManagedLock mock_managed_lock;
